@@ -18,27 +18,128 @@
   header { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; margin-bottom: 20px; }
   h1 { font-size: 20px; margin: 0; letter-spacing: -0.01em; }
   .sub { color: var(--muted); font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .dot.on { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  .dot.off { background: #4a5162; }
+
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; }
+  .card .k { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }
+  .card .v { font-size: 24px; font-weight: 600; margin-top: 4px; font-variant-numeric: tabular-nums; }
+  .card .v small { font-size: 13px; color: var(--muted); font-weight: 400; }
+
   section { margin-bottom: 26px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
-  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; color: var(--muted); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+
+  table { width: 100%; border-collapse: collapse; }
+  #live table, #players table { min-width: 620px; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--line); font-variant-numeric: tabular-nums; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); font-weight: 600; background: var(--panel-2); }
+  tr:last-child td { border-bottom: none; }
+  td.num, th.num { text-align: right; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; background: #232833; color: var(--muted); border: 1px solid var(--line); }
+  .bar { height: 6px; border-radius: 999px; background: #232833; overflow: hidden; min-width: 60px; }
+  .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+
+  .empty { color: var(--muted); font-size: 13px; padding: 16px; }
+  .foot { color: var(--muted); font-size: 12px; margin-top: 24px; }
 </style>
 </head>
 <body>
 <div class="wrap">
   <header>
     <h1>Palworld Admin</h1>
-    <span class="sub">starting up…</span>
+    <span class="sub" id="sub">loading…</span>
   </header>
+
+  <div class="cards" id="cards"></div>
 
   <section>
     <h2>Online now</h2>
-    <div class="panel">Not collecting data yet.</div>
+    <div class="panel" id="live"></div>
   </section>
 
   <section>
     <h2>Player stats</h2>
-    <div class="panel">Not collecting data yet.</div>
+    <div class="panel" id="players"></div>
   </section>
+
+  <div class="foot" id="foot"></div>
 </div>
+
+<script>
+const state = { data: null, month: null, loading: false };
+
+const hms = s => {
+  s = Math.max(0, Math.round(s));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m`;
+  return `${s}s`;
+};
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const clock = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+function renderChrome() {
+  const d = state.data, P = d.players;
+  const live = P.filter(p => p.online);
+  const totalSecs = P.reduce((a, p) => a + p.total_seconds, 0);
+  document.getElementById('sub').innerHTML =
+    `<span class="dot ${live.length ? 'on' : 'off'}"></span> ${live.length} online · ${P.length} players · world day ${d.metrics?.days ?? '—'}`;
+
+  document.getElementById('cards').innerHTML = [
+    ['Online', live.length, `${P.length} known`],
+    ['Server FPS', d.metrics?.fps != null ? Math.round(d.metrics.fps) : '—', ''],
+    ['World day', d.metrics?.days ?? '—', ''],
+    ['Base camps', d.metrics?.basecamps ?? '—', ''],
+    ['Total playtime', hms(totalSecs), 'all players'],
+    ['Sessions', P.reduce((a, p) => a + p.sessions, 0), 'tracked'],
+  ].map(([k, v, s]) => `<div class="card"><div class="k">${k}</div><div class="v">${v}${s ? ` <small>${s}</small>` : ''}</div></div>`).join('');
+
+  document.getElementById('live').innerHTML = live.length ? `<table>
+    <tr><th>Player</th><th>Platform</th><th class="num">Level</th><th>Online for</th><th class="num">Ping</th></tr>
+    ${live.map(p => `<tr>
+      <td><span class="dot on"></span> ${esc(p.name)}</td>
+      <td><span class="pill">${esc(p.platform)}</span></td>
+      <td class="num">${p.level ?? '—'}</td>
+      <td>${p.session_started ? hms((Date.now() - new Date(p.session_started)) / 1000) : '—'}</td>
+      <td class="num">${esc(p.ip || '—')}</td>
+    </tr>`).join('')}</table>` : `<div class="empty">Nobody online right now.</div>`;
+
+  const max = Math.max(1, ...P.map(p => p.total_seconds));
+  document.getElementById('players').innerHTML = P.length ? `<table>
+    <tr><th>Player</th><th>Platform</th><th class="num">Level</th><th class="num">Playtime</th><th>Sessions</th><th class="num">Avg session</th><th class="num">Last seen</th></tr>
+    ${P.map(p => `<tr>
+      <td><span class="dot ${p.online ? 'on' : 'off'}"></span> ${esc(p.name)}</td>
+      <td><span class="pill">${esc(p.platform)}</span></td>
+      <td class="num">${p.level ?? '—'}</td>
+      <td class="num">${hms(p.total_seconds)}<div class="bar"><i style="width:${Math.round(100 * p.total_seconds / max)}%"></i></div></td>
+      <td class="num">${p.sessions}</td>
+      <td class="num">${p.sessions ? hms(p.avg_seconds) : '—'}</td>
+      <td class="num">${p.last_seen ? clock(p.last_seen) : '—'}</td>
+    </tr>`).join('')}</table>` : `<div class="empty">No players recorded yet.</div>`;
+}
+
+async function load() {
+  if (state.loading) return;
+  state.loading = true;
+  try {
+    const summary = await (await fetch('/api/summary')).json();
+    state.data = summary;
+    state.month = summary.month;
+    renderChrome();
+    document.getElementById('foot').textContent =
+      `Auto-refreshes every 30s · last update ${new Date().toLocaleTimeString()}`;
+  } catch (err) {
+    console.error('refresh failed', err);
+  } finally {
+    state.loading = false;
+  }
+}
+
+load();
+setInterval(load, 30000);
+</script>
 </body>
 </html>

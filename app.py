@@ -408,6 +408,79 @@ def summary_payload(month=None):
     }
 
 
+def _clip_session(row, lo, hi, span, players, now):
+    """One session clipped to [lo, hi), or None if it does not overlap."""
+    raw_start = parse_iso(row["started_at"])
+    ongoing = row["ended_at"] is None
+    raw_end = parse_iso(row["ended_at"]) if row["ended_at"] else now
+    start, end = max(raw_start, lo), min(raw_end, hi)
+    if end <= start:
+        return None
+    meta = players.get(row["player_id"], {})
+    return {
+        "id": row["id"],
+        "player_id": row["player_id"],
+        "name": meta.get("name") or row["player_id"],
+        "platform": meta.get("platform") or "",
+        "start": iso(raw_start),
+        "end": None if ongoing else iso(raw_end),
+        "ongoing": ongoing,
+        "start_frac": round((start - lo).total_seconds() / span, 6),
+        "end_frac": round((end - lo).total_seconds() / span, 6),
+        "continues_before": raw_start < lo,
+        "continues_after": raw_end > hi,
+        "day_seconds": round((end - start).total_seconds()),
+        "duration_seconds": round((raw_end - raw_start).total_seconds()),
+    }
+
+
+def range_payload(start_str, end_str):
+    """Per-day session lists for an inclusive date range (local days)."""
+    first = dt.date.fromisoformat(start_str)
+    last = dt.date.fromisoformat(end_str)
+    if last < first:
+        raise ValueError("end must not precede start")
+    if (last - first).days > 92:
+        raise ValueError("range too large")
+
+    lo = dt.datetime.combine(first, dt.time.min, tzinfo=TZ).astimezone(dt.timezone.utc)
+    hi = (
+        dt.datetime.combine(last, dt.time.min, tzinfo=TZ) + dt.timedelta(days=1)
+    ).astimezone(dt.timezone.utc)
+    now = now_utc()
+
+    with db() as conn:
+        players = {r["player_id"]: dict(r) for r in conn.execute("SELECT * FROM players")}
+        rows = session_rows(conn, lo, hi)
+
+    days = []
+    cursor = first
+    while cursor <= last:
+        d_lo = dt.datetime.combine(cursor, dt.time.min, tzinfo=TZ).astimezone(dt.timezone.utc)
+        d_hi = (
+            dt.datetime.combine(cursor, dt.time.min, tzinfo=TZ) + dt.timedelta(days=1)
+        ).astimezone(dt.timezone.utc)
+        span = (d_hi - d_lo).total_seconds()
+        sessions = [
+            s for s in (_clip_session(r, d_lo, d_hi, span, players, now) for r in rows) if s
+        ]
+        sessions.sort(key=lambda s: (s["name"].lower(), s["start"]))
+        days.append({
+            "date": cursor.isoformat(),
+            "sessions": sessions,
+            "total_seconds": round(sum(s["day_seconds"] for s in sessions)),
+            "player_count": len({s["player_id"] for s in sessions}),
+            "now": iso(now),
+        })
+        cursor += dt.timedelta(days=1)
+
+    return {"start": start_str, "end": end_str, "days": days, "now": iso(now)}
+
+
+def day_payload(date_str):
+    return range_payload(date_str, date_str)["days"][0]
+
+
 @app.route("/healthz")
 def healthz():
     return jsonify(status="ok")
@@ -421,6 +494,25 @@ def favicon():
 @app.route("/api/summary")
 def api_summary():
     return jsonify(summary_payload(request.args.get("month")))
+
+
+@app.route("/api/day")
+def api_day():
+    date_str = request.args.get("date")
+    if not date_str:
+        return jsonify(error="date required"), 400
+    return jsonify(day_payload(date_str))
+
+
+@app.route("/api/range")
+def api_range():
+    start, end = request.args.get("start"), request.args.get("end")
+    if not start or not end:
+        return jsonify(error="start and end required"), 400
+    try:
+        return jsonify(range_payload(start, end))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
 
 
 @app.route("/")

@@ -8,6 +8,7 @@
   :root {
     --bg: #0f1116; --panel: #171a21; --panel-2: #1d2129; --line: #2a2f3a;
     --text: #e6e9ef; --muted: #8b93a4; --accent: #5b9dff; --good: #3ddc84;
+    --p1: #5b9dff; --p2: #ff7ab6; --p3: #3ddc84; --p4: #ffb454; --p5: #b98cff; --p6: #4fd1c5;
   }
   * { box-sizing: border-box; }
   body {
@@ -42,6 +43,24 @@
   .bar { height: 6px; border-radius: 999px; background: #232833; overflow: hidden; min-width: 60px; }
   .bar > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 
+  .cal-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--line); background: var(--panel-2); }
+  .cal-head .label { font-weight: 600; }
+  .cal-head button { background: #232833; color: var(--text); border: 1px solid var(--line); border-radius: 8px; padding: 5px 11px; cursor: pointer; font-size: 13px; }
+  .cal-head button:hover { border-color: var(--accent); }
+  .dow { display: grid; grid-template-columns: repeat(7, 1fr); background: var(--panel-2); border-bottom: 1px solid var(--line); }
+  .dow span { padding: 7px 8px; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  .grid { display: grid; grid-template-columns: repeat(7, 1fr); }
+  .cell { min-height: 92px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); padding: 7px 8px; cursor: pointer; position: relative; transition: background .12s; }
+  .cell:nth-child(7n) { border-right: none; }
+  .cell.blank { background: #12141a; cursor: default; }
+  .cell:hover:not(.blank) { background: #1b1f27; }
+  .cell.sel { outline: 2px solid var(--accent); outline-offset: -2px; background: #1b212b; }
+  .cell .d { font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+  .cell.today .d { color: var(--accent); font-weight: 700; }
+  .chips { display: flex; flex-direction: column; gap: 3px; }
+  .chip { font-size: 11px; padding: 1px 6px; border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid var(--accent); background: #1e232c; }
+  .cell .tot { position: absolute; right: 8px; top: 6px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
+
   .empty { color: var(--muted); font-size: 13px; padding: 16px; }
   .foot { color: var(--muted); font-size: 12px; margin-top: 24px; }
 </style>
@@ -65,11 +84,34 @@
     <div class="panel" id="players"></div>
   </section>
 
+  <section>
+    <h2>Who was online</h2>
+    <div class="panel">
+      <div class="cal-head">
+        <button id="prev">‹</button>
+        <span class="label" id="calLabel"></span>
+        <button id="next">›</button>
+      </div>
+      <div class="dow">
+        <span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span>
+      </div>
+      <div class="grid" id="grid"></div>
+    </div>
+  </section>
+
   <div class="foot" id="foot"></div>
 </div>
 
 <script>
-const state = { data: null, month: null, loading: false };
+const COLORS = ["--p1", "--p2", "--p3", "--p4", "--p5", "--p6"];
+const state = { data: null, month: null, selected: null, calDigest: null, cellJson: {}, loading: false };
+
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const colorFor = pid => {
+  let h = 0;
+  for (const ch of String(pid)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return css(COLORS[h % COLORS.length]);
+};
 
 const hms = s => {
   s = Math.max(0, Math.round(s));
@@ -121,14 +163,82 @@ function renderChrome() {
     </tr>`).join('')}</table>` : `<div class="empty">No players recorded yet.</div>`;
 }
 
-async function load() {
+function cellInner(day) {
+  const chips = day.players.slice(0, 3).map(p =>
+    `<span class="chip" style="border-left-color:${colorFor(p.player_id)}">${esc(p.name)} · ${hms(p.seconds)}</span>`
+  ).join('');
+  const more = day.players.length > 3
+    ? `<span class="chip" style="border-left-color:#3a4150;color:#8b93a4">+${day.players.length - 3} more</span>` : '';
+  return `<div class="d">${Number(day.date.slice(-2))}</div>
+    ${day.total ? `<span class="tot">${hms(day.total)}</span>` : ''}
+    <div class="chips">${chips}${more}</div>`;
+}
+
+function renderCalendar() {
+  const d = state.data;
+  document.getElementById('calLabel').textContent =
+    new Date(d.month + '-01T00:00:00').toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+
+  const [y, m] = d.month.split('-').map(Number);
+  const firstDow = (new Date(y, m - 1, 1).getDay() + 6) % 7;
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push('<div class="cell blank"></div>');
+
+  state.cellJson = {};
+  for (const day of d.days) {
+    const cls = ['cell'];
+    if (day.date === d.today) cls.push('today');
+    if (day.total) cls.push('has');
+    if (day.date === state.selected) cls.push('sel');
+    state.cellJson[day.date] = JSON.stringify(day);
+    cells.push(`<div class="${cls.join(' ')}" data-date="${day.date}">${cellInner(day)}</div>`);
+  }
+  document.getElementById('grid').innerHTML = cells.join('');
+}
+
+/** Refresh only cells whose data changed, so a live session does not rebuild the grid. */
+function updateCells(days) {
+  const grid = document.getElementById('grid');
+  for (const day of days) {
+    const json = JSON.stringify(day);
+    if (state.cellJson[day.date] === json) continue;
+    state.cellJson[day.date] = json;
+    const el = grid.querySelector(`.cell[data-date="${day.date}"]`);
+    if (!el) continue;
+    el.innerHTML = cellInner(day);
+    el.classList.toggle('has', !!day.total);
+  }
+}
+
+function setActive(date) {
+  state.selected = date;
+  document.querySelectorAll('.cell[data-date]').forEach(c =>
+    c.classList.toggle('sel', c.dataset.date === date));
+}
+
+document.getElementById('grid').addEventListener('click', e => {
+  const cell = e.target.closest('.cell[data-date]');
+  if (cell) setActive(cell.dataset.date);
+});
+
+async function load(month) {
   if (state.loading) return;
   state.loading = true;
   try {
-    const summary = await (await fetch('/api/summary')).json();
+    const q = month ? `?month=${encodeURIComponent(month)}` : '';
+    const summary = await (await fetch('/api/summary' + q)).json();
     state.data = summary;
     state.month = summary.month;
+
     renderChrome();
+
+    if (state.calDigest !== summary.month) {
+      state.calDigest = summary.month;
+      renderCalendar();
+    } else {
+      updateCells(summary.days);
+    }
+
     document.getElementById('foot').textContent =
       `Auto-refreshes every 30s · last update ${new Date().toLocaleTimeString()}`;
   } catch (err) {
@@ -138,8 +248,19 @@ async function load() {
   }
 }
 
+document.getElementById('prev').onclick = () => {
+  const [y, m] = state.month.split('-').map(Number);
+  const d = new Date(y, m - 2, 1);
+  load(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+};
+document.getElementById('next').onclick = () => {
+  const [y, m] = state.month.split('-').map(Number);
+  const d = new Date(y, m, 1);
+  load(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+};
+
 load();
-setInterval(load, 30000);
+setInterval(() => load(state.month), 30000);
 </script>
 </body>
 </html>

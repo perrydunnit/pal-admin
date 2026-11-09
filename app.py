@@ -6,6 +6,7 @@ SQLite, and serves a dashboard of player stats and presence history.
 
 
 
+import calendar as calmod
 import datetime as dt
 import os
 import re
@@ -292,9 +293,134 @@ def collector():
         time.sleep(POLL_SECONDS)
 
 
+def session_rows(conn, start=None, end=None):
+    sql = "SELECT * FROM sessions"
+    args = []
+    if start and end:
+        sql += " WHERE COALESCE(ended_at, ?) >= ? AND started_at < ?"
+        args = [iso(end), iso(start), iso(end)]
+    return conn.execute(sql, args).fetchall()
+
+
+def split_by_day(row, lo, hi):
+    """Yield (date, seconds) for a session clipped to [lo, hi)."""
+    start = max(parse_iso(row["started_at"]), lo)
+    end = min(parse_iso(row["ended_at"]) if row["ended_at"] else now_utc(), hi)
+    if end <= start:
+        return
+    cursor = start
+    while cursor < end:
+        next_midnight = dt.datetime.combine(
+            (cursor.astimezone(TZ) + dt.timedelta(days=1)).date(),
+            dt.time.min,
+            tzinfo=TZ,
+        ).astimezone(dt.timezone.utc)
+        chunk_end = min(next_midnight, end)
+        yield cursor.astimezone(TZ).date(), (chunk_end - cursor).total_seconds()
+        cursor = chunk_end
+
+
+def summary_payload(month=None):
+    now = now_utc()
+    if month:
+        year, mon = (int(x) for x in month.split("-"))
+    else:
+        local = now.astimezone(TZ)
+        year, mon = local.year, local.month
+
+    month_start = dt.datetime(year, mon, 1, tzinfo=TZ).astimezone(dt.timezone.utc)
+    days_in_month = calmod.monthrange(year, mon)[1]
+    month_end = (
+        dt.datetime(year, mon, 1, tzinfo=TZ) + dt.timedelta(days=days_in_month)
+    ).astimezone(dt.timezone.utc)
+
+    with db() as conn:
+        players = {r["player_id"]: dict(r) for r in conn.execute("SELECT * FROM players")}
+        all_sessions = session_rows(conn)
+        month_sessions = session_rows(conn, month_start, month_end)
+        open_by_player = {
+            r["player_id"]: r
+            for r in conn.execute("SELECT * FROM sessions WHERE ended_at IS NULL")
+        }
+        metrics_row = conn.execute("SELECT * FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
+        trend = conn.execute(
+            "SELECT ts, playernum, fps FROM metrics ORDER BY ts DESC LIMIT 240"
+        ).fetchall()
+
+    totals = {}
+    for row in all_sessions:
+        start = parse_iso(row["started_at"])
+        end = parse_iso(row["ended_at"]) if row["ended_at"] else now
+        agg = totals.setdefault(row["player_id"], {"seconds": 0.0, "sessions": 0})
+        agg["seconds"] += max(0.0, (end - start).total_seconds())
+        agg["sessions"] += 1
+
+    player_rows = []
+    for pid, meta in players.items():
+        agg = totals.get(pid, {"seconds": 0.0, "sessions": 0})
+        player_rows.append({
+            "player_id": pid,
+            "name": meta["name"] or pid,
+            "platform": meta["platform"] or "unknown",
+            "level": meta["level"],
+            "last_seen": meta["last_seen"],
+            "ip": meta["last_ip"],
+            "online": pid in open_by_player,
+            "session_started": open_by_player[pid]["started_at"] if pid in open_by_player else None,
+            "total_seconds": round(agg["seconds"]),
+            "sessions": agg["sessions"],
+            "avg_seconds": round(agg["seconds"] / agg["sessions"]) if agg["sessions"] else 0,
+        })
+    player_rows.sort(key=lambda r: (not r["online"], -r["total_seconds"]))
+
+    day_map = {}
+    for row in month_sessions:
+        for day, seconds in split_by_day(row, month_start, month_end):
+            bucket = day_map.setdefault(day.isoformat(), {})
+            bucket[row["player_id"]] = bucket.get(row["player_id"], 0) + seconds
+
+    days = []
+    for daynum in range(1, days_in_month + 1):
+        key = dt.date(year, mon, daynum).isoformat()
+        per_player = day_map.get(key, {})
+        days.append({
+            "date": key,
+            "total": round(sum(per_player.values())),
+            "players": [
+                {
+                    "player_id": pid,
+                    "name": (players.get(pid) or {}).get("name") or pid,
+                    "seconds": round(secs),
+                }
+                for pid, secs in sorted(per_player.items(), key=lambda kv: -kv[1])
+            ],
+        })
+
+    return {
+        "month": f"{year:04d}-{mon:02d}",
+        "month_label": dt.date(year, mon, 1).strftime("%B %Y"),
+        "today": now.astimezone(TZ).date().isoformat(),
+        "days": days,
+        "players": player_rows,
+        "metrics": dict(metrics_row) if metrics_row else None,
+        "trend": [dict(r) for r in reversed(trend)],
+        "now": iso(now),
+    }
+
+
 @app.route("/healthz")
 def healthz():
     return jsonify(status="ok")
+
+
+@app.route("/favicon.ico")
+def favicon():
+    return ("", 204)
+
+
+@app.route("/api/summary")
+def api_summary():
+    return jsonify(summary_payload(request.args.get("month")))
 
 
 @app.route("/")

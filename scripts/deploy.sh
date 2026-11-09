@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 # Publish this checkout to the server and rebuild the stack.
 #
+#   scripts/deploy.sh               verify, copy, rebuild, wait for health
 #   scripts/deploy.sh --dry-run     preview the files that would be copied
-#   scripts/deploy.sh               copy, rebuild, recreate, wait for health
+#   scripts/deploy.sh --skip-verify don't run scripts/verify.sh first
+#   scripts/deploy.sh --allow-dirty deploy even with uncommitted changes
+#   scripts/deploy.sh --rollback    redeploy the currently deployed commit
 #
-# Never copies .env — the server keeps its own.
+# Never copies .env — the server keeps its own. Records the deployed commit in
+# ${REMOTE_DIR}/DEPLOYED so the live version is always identifiable.
 set -euo pipefail
 
 REMOTE="${PALADMIN_REMOTE:-paladmin-host}"
 REMOTE_DIR="/opt/stacks/paladmin"
 FILES=(app.py compose.yaml Dockerfile requirements.txt README.md templates docs)
 
-DRY=0
+DRY=0 SKIP_VERIFY=0 ALLOW_DIRTY=0
 for arg in "$@"; do
   case "$arg" in
-    --dry-run|-n) DRY=1 ;;
-    -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --dry-run|-n)   DRY=1 ;;
+    --skip-verify)  SKIP_VERIFY=1 ;;
+    --allow-dirty)  ALLOW_DIRTY=1 ;;
+    -h|--help)      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
@@ -28,19 +34,33 @@ cd "$(dirname "$0")/.."
 if [ "$DRY" = 1 ]; then
   echo "would copy to ${REMOTE}:${REMOTE_DIR}"
   for f in "${FILES[@]}"; do
-    if [ -d "$f" ]; then
-      find "$f" -type f -not -path '*/__pycache__/*' | sed 's/^/  /'
-    else
-      echo "  $f"
-    fi
+    if [ -d "$f" ]; then find "$f" -type f -not -path '*/__pycache__/*' | sed 's/^/  /'
+    else echo "  $f"; fi
   done
   echo "then: docker compose up -d --build"
   exit 0
 fi
 
-echo "==> copying files"
+if [ -n "$(git status --porcelain)" ] && [ "$ALLOW_DIRTY" = 0 ]; then
+  echo "error: working tree has uncommitted changes." >&2
+  git status --short | sed 's/^/  /' >&2
+  echo "commit them (preferred), or pass --allow-dirty to deploy anyway." >&2
+  exit 1
+fi
+
+if [ "$SKIP_VERIFY" = 0 ]; then
+  echo "==> verify"
+  scripts/verify.sh || { echo "error: verification failed; nothing deployed." >&2; exit 1; }
+fi
+
+commit=$(git rev-parse HEAD)
+subject=$(git log -1 --format=%s)
+dirty=""
+[ -n "$(git status --porcelain)" ] && dirty=" (dirty)"
+
+echo "==> copying ${commit:0:7}${dirty} — ${subject}"
 remote_stage="${REMOTE_DIR}/.incoming"
-ssh "$REMOTE" "mkdir -p '${remote_stage}'"
+ssh "$REMOTE" "rm -rf '${remote_stage}' && mkdir -p '${remote_stage}'"
 
 # tar over ssh keeps permissions and avoids one round-trip per file
 tar -czf - --exclude='__pycache__' "${FILES[@]}" | ssh "$REMOTE" "tar -xzf - -C '${remote_stage}'"
@@ -64,7 +84,9 @@ echo "==> waiting for health"
 for _ in $(seq 1 30); do
   status=$(ssh "$REMOTE" "docker inspect --format '{{.State.Health.Status}}' paladmin 2>/dev/null || echo missing")
   if [ "$status" = "healthy" ]; then
-    echo "==> paladmin is healthy — https://pal-admin.example.com"
+    ssh "$REMOTE" "printf 'commit=%s\nsubject=%s\ndeployed=%s\ndeployed_by=%s\n' \
+      '${commit}' '${subject}' \"\$(date -Is)\" '$(whoami)' > '${REMOTE_DIR}/DEPLOYED'"
+    echo "==> deployed ${commit:0:7}${dirty} — https://pal-admin.example.com"
     exit 0
   fi
   sleep 2

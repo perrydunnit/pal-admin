@@ -15,12 +15,13 @@ REMOTE="${PALADMIN_REMOTE:-paladmin-host}"
 REMOTE_DIR="/opt/stacks/paladmin"
 FILES=(app.py compose.yaml Dockerfile requirements.txt README.md templates docs)
 
-DRY=0 SKIP_VERIFY=0 ALLOW_DIRTY=0
+DRY=0 SKIP_VERIFY=0 ALLOW_DIRTY=0 ROLLBACK=0
 for arg in "$@"; do
   case "$arg" in
     --dry-run|-n)   DRY=1 ;;
     --skip-verify)  SKIP_VERIFY=1 ;;
     --allow-dirty)  ALLOW_DIRTY=1 ;;
+    --rollback)     ROLLBACK=1 ;;
     -h|--help)      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
@@ -30,6 +31,25 @@ cd "$(dirname "$0")/.."
 
 [ -f .env ] || echo "warning: no local .env (not copied anyway — the server keeps its own)" >&2
 [ -f app.py ] || { echo "error: run from the repository root" >&2; exit 1; }
+
+# Redeploy whatever DEPLOYED names, from a throwaway worktree so the caller's
+# checkout, branch and uncommitted work are never touched.
+if [ "$ROLLBACK" = 1 ]; then
+  target=$(ssh "$REMOTE" "sed -n 's/^commit=//p' '${REMOTE_DIR}/DEPLOYED' 2>/dev/null" || true)
+  [ -n "${target:-}" ] || { echo "error: no commit recorded in ${REMOTE_DIR}/DEPLOYED" >&2; exit 1; }
+  git cat-file -e "${target}^{commit}" 2>/dev/null \
+    || { echo "error: ${target} is not in this clone; fetch it first" >&2; exit 1; }
+
+  WT=$(mktemp -d)/rollback
+  git worktree add --detach "$WT" "$target" >/dev/null
+  trap 'git worktree remove --force "$WT" >/dev/null 2>&1 || true' EXIT
+
+  echo "==> rolling back to ${target:0:7}: $(git log -1 --format=%s "$target")"
+  cd "$WT"
+  # a commit that predates the gate cannot be verified by it
+  ALLOW_DIRTY=1
+  SKIP_VERIFY=1
+fi
 
 if [ "$DRY" = 1 ]; then
   echo "would copy to ${REMOTE}:${REMOTE_DIR}"

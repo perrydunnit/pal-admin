@@ -6,9 +6,18 @@
 <title>Palworld Admin — Admin</title>
 <style>
   :root {
-    --bg: #0f1116; --panel: #171a21; --panel-2: #1d2129; --line: #2a2f3a;
-    --text: #e6e9ef; --muted: #8b93a4; --accent: #5b9dff; --good: #3ddc84;
-    --p1: #5b9dff; --p2: #ff7ab6; --p3: #3ddc84; --p4: #ffb454; --p5: #b98cff; --p6: #4fd1c5;
+    --bg: #0f1116;
+    --panel: #171a21;
+    --panel-2: #1d2129;
+    --line: #2a2f3a;
+    --text: #e6e9ef;
+    --muted: #8b93a4;
+    --accent: #5b9dff;
+    --good: #3ddc84;
+    --warn: #ffb454;
+    --p1: #5b9dff; --p2: #ff7ab6; --p3: #3ddc84; --p4: #ffb454;
+    --p5: #b98cff; --p6: #4fd1c5;
+    --leftw: 132px;
   }
   * { box-sizing: border-box; }
   body {
@@ -32,6 +41,7 @@
   section { margin-bottom: 26px; }
   h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin: 0 0 10px; font-weight: 600; }
   .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; }
+  .panel.x { overflow-x: auto; }
 
   table { width: 100%; border-collapse: collapse; }
   #live table, #players table { min-width: 620px; }
@@ -61,8 +71,93 @@
   .chip { font-size: 11px; padding: 1px 6px; border-radius: 5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-left: 3px solid var(--accent); background: #1e232c; }
   .cell .tot { position: absolute; right: 8px; top: 6px; font-size: 10px; color: var(--muted); font-variant-numeric: tabular-nums; }
 
+  /* ---------- continuous timeline ---------- */
+  .tlx { overflow-x: auto; overflow-y: hidden; scrollbar-width: thin; scrollbar-color: #333a47 #12141a; }
+  .tlx::-webkit-scrollbar { height: 10px; }
+  .tlx::-webkit-scrollbar-track { background: #12141a; }
+  .tlx::-webkit-scrollbar-thumb { background: #333a47; border-radius: 5px; }
+  .tlx::-webkit-scrollbar-thumb:hover { background: #454e5f; }
+
+  .tlx-inner { position: relative; width: max-content; min-width: 100%; }
+
+  .tl-row { display: flex; align-items: stretch; position: relative; z-index: 2; height: 34px; width: 100%; }
+  .tl-row.head { height: 28px; }
+
+  .tl-left {
+    position: sticky; left: 0; z-index: 5;
+    flex: 0 0 var(--leftw); width: var(--leftw);
+    display: flex; align-items: center; gap: 7px;
+    padding: 0 10px; font-size: 12px;
+    background: var(--panel); border-right: 1px solid var(--line);
+    overflow: hidden;
+  }
+  .tl-left b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tl-left .plat { color: var(--muted); font-size: 10px; }
+  .tl-left .swatch { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .tl-row.head .tl-left {
+    background: var(--panel-2); border-bottom: 1px solid var(--line);
+    font-size: 13px; font-weight: 600; color: var(--text);
+  }
+  .tl-row.head .tl-left.is-today { color: var(--accent); }
+
+  .tl-track { position: relative; flex: 0 0 auto; }
+  .tl-row.head .tl-track { border-bottom: 1px solid var(--line); background: var(--panel-2); }
+
+  .overlay { position: absolute; top: 0; bottom: 0; pointer-events: none; z-index: 1; }
+  .dayline { position: absolute; top: 0; bottom: 0; width: 1px; background: #333a47; }
+  .noonline { position: absolute; top: 0; bottom: 0; width: 1px; background: #20242c; }
+  .nowline { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--good); opacity: .5; }
+
+  .daylabel {
+    position: absolute; top: 5px; font-size: 10px; letter-spacing: .02em;
+    color: var(--muted); white-space: nowrap; padding-left: 5px;
+    border-left: 1px solid #3d4452;
+  }
+  .daylabel.today { color: var(--accent); font-weight: 600; }
+
+  .seg {
+    position: absolute; top: 6px; height: 20px; border-radius: 4px; min-width: 3px;
+    background: var(--c); opacity: .9; cursor: help;
+    -webkit-mask-image: var(--mask, none); mask-image: var(--mask, none);
+    transition: opacity .12s, filter .12s;
+  }
+  .seg:hover { opacity: 1; filter: brightness(1.25); outline: 1px solid rgba(255,255,255,.35); }
+  .seg.open {
+    background: linear-gradient(90deg, var(--c) 0%, var(--c) 62%, transparent 100%);
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { opacity: .95; } 50% { opacity: .55; } }
+  .seg.open::after {
+    content: ""; position: absolute; right: 2px; top: 50%; width: 4px; height: 4px;
+    margin-top: -2px; border-radius: 50%; background: var(--good);
+  }
+
+  .tip {
+    position: fixed; z-index: 50; pointer-events: none; opacity: 0;
+    width: max-content; max-width: 320px;
+    background: #0b0d12; border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 10px; font-size: 12px; line-height: 1.5;
+    box-shadow: 0 8px 24px rgba(0,0,0,.55); transition: opacity .1s; transform: translate(-50%, -100%);
+  }
+  .tip.on { opacity: 1; }
+  .tip b { display: block; margin-bottom: 3px; }
+  .tip .row { color: var(--muted); }
+  .tip .note { color: var(--warn); margin-top: 3px; }
+
   .empty { color: var(--muted); font-size: 13px; padding: 16px; }
   .foot { color: var(--muted); font-size: 12px; margin-top: 24px; }
+
+  @media (max-width: 700px) {
+    :root { --leftw: 96px; }
+    .wrap { padding: 16px 12px 40px; }
+    .card .v { font-size: 20px; }
+    .cell { min-height: 62px; padding: 5px 6px; }
+    .cell .tot, .cell .chip { display: none; }
+    .cell.has { background: rgba(91,157,255,.10); }
+    .cell.has:hover { background: rgba(91,157,255,.18); }
+    .cal-head .label { font-size: 14px; }
+    .tl-left { font-size: 11px; padding: 0 7px; }
+  }
 </style>
 </head>
 <body>
@@ -76,12 +171,12 @@
 
   <section>
     <h2>Online now</h2>
-    <div class="panel" id="live"></div>
+    <div class="panel x" id="live"></div>
   </section>
 
   <section>
     <h2>Player stats</h2>
-    <div class="panel" id="players"></div>
+    <div class="panel x" id="players"></div>
   </section>
 
   <section>
@@ -99,12 +194,35 @@
     </div>
   </section>
 
+  <section>
+    <h2 id="detailHead">Day detail</h2>
+    <div class="panel">
+      <div class="tlx" id="tlx">
+        <div class="tlx-inner" id="tlxInner"></div>
+      </div>
+    </div>
+  </section>
+
   <div class="foot" id="foot"></div>
 </div>
 
 <script>
 const COLORS = ["--p1", "--p2", "--p3", "--p4", "--p5", "--p6"];
-const state = { data: null, month: null, selected: null, calDigest: null, cellJson: {}, loading: false };
+const tlx = document.getElementById('tlx');
+const tlxInner = document.getElementById('tlxInner');
+
+const state = {
+  data: null,
+  month: null,
+  selected: null,
+  timeline: null,
+  dayWidth: 0,
+  tlDigest: null,
+  calDigest: null,
+  cellJson: {},
+  loading: false,
+  scrollTimer: null,
+};
 
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const colorFor = pid => {
@@ -112,7 +230,6 @@ const colorFor = pid => {
   for (const ch of String(pid)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
   return css(COLORS[h % COLORS.length]);
 };
-
 const hms = s => {
   s = Math.max(0, Math.round(s));
   const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60);
@@ -121,7 +238,12 @@ const hms = s => {
   return `${s}s`;
 };
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const fmtFull = iso => new Date(iso).toLocaleString(undefined, { weekday: 'short', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const dayShort = d => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+const dayLong = d => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
 const clock = iso => new Date(iso).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// ------------------------------------------------------------ chrome
 
 function renderChrome() {
   const d = state.data, P = d.players;
@@ -196,7 +318,6 @@ function renderCalendar() {
   document.getElementById('grid').innerHTML = cells.join('');
 }
 
-/** Refresh only cells whose data changed, so a live session does not rebuild the grid. */
 function updateCells(days) {
   const grid = document.getElementById('grid');
   for (const day of days) {
@@ -210,16 +331,171 @@ function updateCells(days) {
   }
 }
 
-function setActive(date) {
-  state.selected = date;
-  document.querySelectorAll('.cell[data-date]').forEach(c =>
-    c.classList.toggle('sel', c.dataset.date === date));
-}
-
 document.getElementById('grid').addEventListener('click', e => {
   const cell = e.target.closest('.cell[data-date]');
-  if (cell) setActive(cell.dataset.date);
+  if (cell) focusDay(cell.dataset.date, true);
 });
+
+// ------------------------------------------------------------ timeline
+
+function dayWidthFor() { return window.innerWidth < 700 ? 170 : 270; }
+
+function paneWidths() {
+  const tl = state.timeline;
+  const W = tl.days.length * state.dayWidth;
+  return { W, xs: tl.days.map(d => d.start_frac * W) };
+}
+
+function renderTimeline() {
+  const tl = state.timeline;
+  if (!tl) return;
+  const { W, xs } = paneWidths();
+  const today = state.data.today;
+
+  const players = [...new Set(tl.sessions.map(s => s.player_id))];
+
+  let overlay = '';
+  tl.days.forEach((d, i) => {
+    if (i > 0) overlay += `<div class="dayline" style="left:${xs[i]}px"></div>`;
+    overlay += `<div class="noonline" style="left:${d.mid_frac * W}px"></div>`;
+  });
+  if (tl.now_frac != null) overlay += `<div class="nowline" style="left:${tl.now_frac * W}px"></div>`;
+
+  const labels = tl.days.map((d, i) =>
+    `<span class="daylabel${d.date === today ? ' today' : ''}" style="left:${xs[i]}px">${dayShort(d.date)}</span>`
+  ).join('');
+
+  const rows = players.map(pid => {
+    const list = tl.sessions.filter(s => s.player_id === pid);
+    const bars = list.map(s => {
+      const left = s.start_frac * W;
+      const width = Math.max(3, (s.end_frac - s.start_frac) * W);
+      const cls = ['seg'];
+      if (s.ongoing) cls.push('open');
+      let mask = 'none';
+      if (s.continues_before && (s.continues_after || s.ongoing)) {
+        mask = 'linear-gradient(90deg, transparent 0, #000 16px, #000 calc(100% - 16px), transparent 100%)';
+      } else if (s.continues_before) {
+        mask = 'linear-gradient(90deg, transparent 0, #000 16px)';
+      } else if (s.continues_after) {
+        mask = 'linear-gradient(90deg, #000 calc(100% - 16px), transparent 100%)';
+      }
+      return `<i class="${cls.join(' ')}" style="left:${left}px;width:${width}px;--c:${colorFor(pid)};--mask:${mask}"
+        data-tip="${esc(tipFor(s))}"></i>`;
+    }).join('');
+    const first = list[0];
+    return `<div class="tl-row" data-player="${esc(pid)}">
+      <div class="tl-left">
+        <span class="swatch" style="background:${colorFor(pid)}"></span>
+        <b>${esc(first.name)}</b><span class="plat">${esc(first.platform || '')}</span>
+      </div>
+      <div class="tl-track" style="width:${W}px">${bars}</div>
+    </div>`;
+  }).join('');
+
+  const emptyRow = players.length ? '' :
+    `<div class="tl-row"><div class="tl-left"><span class="plat">no data</span></div>
+      <div class="tl-track" style="width:${W}px"></div></div>`;
+
+  tlxInner.innerHTML = `
+    <div class="overlay" style="left:var(--leftw);width:${W}px">${overlay}</div>
+    <div class="tl-row head">
+      <div class="tl-left" id="stickDate">—</div>
+      <div class="tl-track" style="width:${W}px">${labels}</div>
+    </div>
+    ${rows}${emptyRow}`;
+
+  bindBars();
+  syncSticky();
+}
+
+function bindBars() {
+  tlxInner.querySelectorAll('.seg').forEach(s => {
+    s.addEventListener('mouseenter', e => showTip(e, s.dataset.tip));
+    s.addEventListener('mousemove', moveTip);
+    s.addEventListener('mouseleave', hideTip);
+  });
+}
+
+function dayIndexAt(x) {
+  const { xs } = paneWidths();
+  let idx = 0;
+  for (let i = 0; i < xs.length; i++) if (xs[i] <= x + 0.5) idx = i;
+  return idx;
+}
+
+function syncSticky() {
+  const tl = state.timeline;
+  if (!tl) return;
+  const idx = dayIndexAt(tlx.scrollLeft);
+  const day = tl.days[idx];
+  if (!day) return;
+
+  const cell = document.getElementById('stickDate');
+  if (cell) {
+    cell.textContent = dayLong(day.date);
+    cell.classList.toggle('is-today', day.date === state.data.today);
+  }
+  if (state.selected !== day.date) {
+    state.selected = day.date;
+    document.querySelectorAll('.cell[data-date]').forEach(c =>
+      c.classList.toggle('sel', c.dataset.date === day.date));
+  }
+}
+
+function focusDay(date, animate) {
+  const tl = state.timeline;
+  if (!tl) return;
+  const idx = tl.days.findIndex(d => d.date === date);
+  if (idx < 0) return;
+  const { xs } = paneWidths();
+  tlx.scrollTo({ left: xs[idx], behavior: animate ? 'smooth' : 'auto' });
+}
+
+tlx.addEventListener('scroll', () => {
+  syncSticky();
+  clearTimeout(state.scrollTimer);
+  state.scrollTimer = setTimeout(syncSticky, 120);
+}, { passive: true });
+
+// ------------------------------------------------------------ tooltip
+
+const tipEl = document.createElement('div');
+tipEl.className = 'tip';
+document.body.appendChild(tipEl);
+
+function tipFor(s) {
+  const parts = [`${s.name}${s.platform ? ' · ' + s.platform : ''}`];
+  parts.push(`start ${fmtFull(s.start)}`);
+  parts.push(s.ongoing ? `still online · ${hms(s.duration_seconds)} so far` : `end ${fmtFull(s.end)}`);
+  if (!s.ongoing) parts.push(`duration ${hms(s.duration_seconds)}`);
+  if (s.continues_before) parts.push('continued from the previous month');
+  if (s.continues_after && !s.ongoing) parts.push('continues into the next month');
+  return parts.join('\u0001');
+}
+
+function showTip(e, text) {
+  const [title, ...rows] = text.split('\u0001');
+  tipEl.innerHTML = `<b>${esc(title)}</b>` +
+    rows.map((r, i) => `<div class="row${i > 1 && /continued|continues/.test(r) ? ' note' : ''}">${esc(r)}</div>`).join('');
+  tipEl.classList.add('on');
+  moveTip(e);
+}
+function moveTip(e) {
+  const pad = 10, w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+  const x = Math.min(Math.max(e.clientX, w / 2 + pad), window.innerWidth - w / 2 - pad);
+  if (e.clientY - h - 14 < pad) {
+    tipEl.style.top = `${e.clientY + 18}px`;
+    tipEl.style.transform = 'translate(-50%, 0)';
+  } else {
+    tipEl.style.top = `${e.clientY - 14}px`;
+    tipEl.style.transform = 'translate(-50%, -100%)';
+  }
+  tipEl.style.left = `${x}px`;
+}
+function hideTip() { tipEl.classList.remove('on'); }
+
+// ------------------------------------------------------------ load / refresh
 
 async function load(month) {
   if (state.loading) return;
@@ -227,8 +503,13 @@ async function load(month) {
   try {
     const q = month ? `?month=${encodeURIComponent(month)}` : '';
     const summary = await (await fetch('/api/summary' + q)).json();
+    const timeline = await (await fetch('/api/timeline?month=' + summary.month)).json();
+
+    const monthChanged = state.month !== summary.month;
     state.data = summary;
     state.month = summary.month;
+    state.timeline = timeline;
+    state.dayWidth = dayWidthFor();
 
     renderChrome();
 
@@ -239,6 +520,23 @@ async function load(month) {
       updateCells(summary.days);
     }
 
+    const digest = JSON.stringify({ d: timeline.days, s: timeline.sessions });
+    const keepLeft = monthChanged ? null : tlx.scrollLeft;
+    if (digest !== state.tlDigest || monthChanged) {
+      state.tlDigest = digest;
+      renderTimeline();
+      if (keepLeft != null) tlx.scrollLeft = keepLeft;
+      else focusDay(pickStartDay(timeline), false);
+      syncSticky();
+    } else if (timeline.now_frac != null) {
+      // live marker only
+      const line = tlxInner.querySelector('.nowline');
+      const { W } = paneWidths();
+      if (line) line.style.left = `${timeline.now_frac * W}px`;
+      else { renderTimeline(); tlx.scrollLeft = keepLeft ?? 0; }
+    }
+
+    document.getElementById('detailHead').textContent = `Day detail — ${timeline.month_label}`;
     document.getElementById('foot').textContent =
       `Auto-refreshes every 30s · last update ${new Date().toLocaleTimeString()}`;
   } catch (err) {
@@ -246,6 +544,13 @@ async function load(month) {
   } finally {
     state.loading = false;
   }
+}
+
+function pickStartDay(timeline) {
+  const today = state.data.today;
+  if (timeline.days.some(d => d.date === today)) return today;
+  const withData = state.data.days.find(d => d.total);
+  return withData ? withData.date : timeline.days[0].date;
 }
 
 document.getElementById('prev').onclick = () => {
@@ -258,6 +563,20 @@ document.getElementById('next').onclick = () => {
   const d = new Date(y, m, 1);
   load(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
 };
+
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    const w = dayWidthFor();
+    if (w === state.dayWidth) return;
+    const keep = state.selected;
+    state.dayWidth = w;
+    state.tlDigest = null;
+    renderTimeline();
+    if (keep) focusDay(keep, false);
+  }, 150);
+});
 
 load();
 setInterval(() => load(state.month), 30000);

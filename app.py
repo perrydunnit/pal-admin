@@ -1,10 +1,11 @@
 """Palworld admin dashboard.
 
-Collects player presence from the game REST API and container log, persists it to
-SQLite, and serves a dashboard of player stats and presence history.
+Collects player presence from two sources and persists it to SQLite:
+  * the game REST API (/v1/api/players) for live state and levels
+  * the container log for exact join/leave timestamps
+
+Serves a single-page dashboard with player stats and a presence calendar.
 """
-
-
 
 import calendar as calmod
 import datetime as dt
@@ -19,8 +20,6 @@ import docker
 import requests
 from flask import Flask, jsonify, render_template, request
 
-
-
 TZ = ZoneInfo(os.environ.get("TZ", "UTC"))
 PAL_API = os.environ.get("PAL_API", "http://palworld-server:8212").rstrip("/")
 ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
@@ -31,8 +30,6 @@ POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
 
 app = Flask(__name__)
 _db_lock = threading.Lock()
-
-
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -293,6 +290,8 @@ def collector():
         time.sleep(POLL_SECONDS)
 
 
+# ------------------------------------------------------------------- queries
+
 def session_rows(conn, start=None, end=None):
     sql = "SELECT * FROM sessions"
     args = []
@@ -481,6 +480,64 @@ def day_payload(date_str):
     return range_payload(date_str, date_str)["days"][0]
 
 
+def timeline_payload(month):
+    """One continuous timeline for a month: sessions positioned on a single axis."""
+    year, mon = (int(x) for x in month.split("-"))
+    first = dt.date(year, mon, 1)
+    last = dt.date(year, mon, calmod.monthrange(year, mon)[1])
+    lo = dt.datetime.combine(first, dt.time.min, tzinfo=TZ).astimezone(dt.timezone.utc)
+    hi = (
+        dt.datetime.combine(last, dt.time.min, tzinfo=TZ) + dt.timedelta(days=1)
+    ).astimezone(dt.timezone.utc)
+    span = (hi - lo).total_seconds()
+    now = now_utc()
+
+    with db() as conn:
+        players = {r["player_id"]: dict(r) for r in conn.execute("SELECT * FROM players")}
+        rows = session_rows(conn, lo, hi)
+
+    sessions = [s for s in (_clip_session(r, lo, hi, span, players, now) for r in rows) if s]
+    sessions.sort(key=lambda s: (s["name"].lower(), s["start"]))
+
+    days = []
+    cursor = first
+    while cursor <= last:
+        d_lo = dt.datetime.combine(cursor, dt.time.min, tzinfo=TZ).astimezone(dt.timezone.utc)
+        d_hi = (
+            dt.datetime.combine(cursor, dt.time.min, tzinfo=TZ) + dt.timedelta(days=1)
+        ).astimezone(dt.timezone.utc)
+        days.append({
+            "date": cursor.isoformat(),
+            "start_frac": round((d_lo - lo).total_seconds() / span, 6),
+            "mid_frac": round(((d_lo + (d_hi - d_lo) / 2) - lo).total_seconds() / span, 6),
+        })
+        cursor += dt.timedelta(days=1)
+
+    now_frac = None
+    if lo <= now <= hi:
+        now_frac = round((now - lo).total_seconds() / span, 6)
+
+    return {
+        "month": f"{year:04d}-{mon:02d}",
+        "month_label": first.strftime("%B %Y"),
+        "days": days,
+        "sessions": sessions,
+        "now_frac": now_frac,
+        "total_seconds": round(sum(s["day_seconds"] for s in sessions)),
+    }
+
+
+@app.route("/api/timeline")
+def api_timeline():
+    month = request.args.get("month")
+    if not month:
+        return jsonify(error="month required"), 400
+    try:
+        return jsonify(timeline_payload(month))
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+
 @app.route("/healthz")
 def healthz():
     return jsonify(status="ok")
@@ -523,3 +580,7 @@ def index():
 # Started at import so it also runs under a WSGI server (single worker only).
 init_db()
 threading.Thread(target=collector, daemon=True).start()
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=8000)

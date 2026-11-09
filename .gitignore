@@ -1,0 +1,22 @@
+# runtime data and secrets
+.env
+data/
+*.db
+*.db-shm
+*.db-wal
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# editors / os
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# scratch
+*.log
+*.tgz

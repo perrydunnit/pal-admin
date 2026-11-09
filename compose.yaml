@@ -1,0 +1,50 @@
+# Palworld admin dashboard, managed as a Dockge stack.
+# Reads live state from the game's REST API and join/leave history from the
+# game container's log (via the Docker socket, read-only).
+services:
+  paladmin:
+    build: .
+    image: paladmin:latest
+    container_name: paladmin
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).status == 200 else 1)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=${TRAEFIK_NETWORK:-media_default}
+
+      - traefik.http.routers.paladmin-secure.rule=Host(`${PALADMIN_HOSTNAME:-pal-admin.example.com}`)
+      - traefik.http.routers.paladmin-secure.entrypoints=${TRAEFIK_ENTRYPOINT:-websecure}
+      - traefik.http.routers.paladmin-secure.tls.certresolver=${TRAEFIK_CERTRESOLVER:-letsencrypt}
+      - traefik.http.routers.paladmin-secure.middlewares=paladmin-auth
+      - traefik.http.routers.paladmin-secure.service=paladmin
+
+      - traefik.http.routers.paladmin.rule=Host(`${PALADMIN_HOSTNAME:-pal-admin.example.com}`)
+      - traefik.http.routers.paladmin.entrypoints=${TRAEFIK_ENTRYPOINT_HTTP:-web}
+      - traefik.http.routers.paladmin.middlewares=paladmin-redirect
+      - traefik.http.routers.paladmin.service=paladmin
+      - traefik.http.middlewares.paladmin-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.paladmin-redirect.redirectscheme.permanent=true
+
+      # Same credential as the game's admin/API password.
+      - traefik.http.middlewares.paladmin-auth.basicauth.users=REDACTED
+
+      - traefik.http.services.paladmin.loadbalancer.server.port=8000
+
+    networks:
+      - palnet
+
+networks:
+  # The network the game server and Traefik already share.
+  palnet:
+    name: ${TRAEFIK_NETWORK:-media_default}
+    external: true

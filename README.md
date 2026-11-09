@@ -48,16 +48,34 @@ data/                  SQLite runtime state (gitignored)
 
 | Doc | Contents |
 |---|---|
+| [docs/WORKFLOW.md](docs/WORKFLOW.md) | **The process**: branch → change → verify → commit → deploy → confirm → merge |
 | [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Where it runs, host paths, DNS, TLS, deploy/rollback, backups |
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Data sources, ingestion rules, DB schema, timing |
 | [docs/API.md](docs/API.md) | Endpoints and every field they return |
 | [docs/PALWORLD-SERVER.md](docs/PALWORLD-SERVER.md) | The game stack this reads from: settings, discovery, NAT |
 | [docs/ENHANCEMENTS.md](docs/ENHANCEMENTS.md) | Gotchas and known gaps to read before changing things |
 
+Agents working here should start with [AGENTS.md](AGENTS.md) (and
+[.github/copilot-instructions.md](.github/copilot-instructions.md), which points
+at it).
+
+## The loop
+
+```bash
+scripts/install-hooks.sh     # once per clone: verify on every commit
+git switch -c feat/whatever  # 1. branch
+scripts/verify.sh            # 2. verify
+git commit -am "feat: …"     # 3. commit (conventional, one idea)
+scripts/deploy.sh            # 4. deploy: verifies, refuses a dirty tree, rebuilds, checks health
+```
+
+Deploys record `commit`, `subject`, `deployed`, `deployed_by` in
+`/opt/stacks/paladmin/DEPLOYED`, so what is live is always identifiable.
+
 ## Ground rules
 
 - **Never commit `.env`.** `.gitignore` covers it; `.env.example` is the
-  documented template.
+  documented template, and `verify.sh` fails if `.env` ever becomes tracked.
 - **One gunicorn worker.** The collector is a thread started at import; extra
   workers would poll and write concurrently.
 - **Deploying this does not touch the game.** They are separate stacks; this one
@@ -115,10 +133,12 @@ bcrypt hash, and replace the value in the `paladmin-auth` label.
 
 ## Operations
 
-From a checkout, publish and rebuild in one step:
+From a checkout, publish and rebuild in one step — it verifies, refuses a dirty
+tree, rebuilds, waits for health, and records the commit:
 
 ```bash
-scripts/deploy.sh          # add --dry-run to preview the file list
+scripts/deploy.sh            # --dry-run to preview, --rollback to redeploy the recorded commit
+ssh paladmin-host 'cat /opt/stacks/paladmin/DEPLOYED'
 ```
 
 On the server:

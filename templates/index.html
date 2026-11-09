@@ -78,6 +78,21 @@
   .tlx::-webkit-scrollbar-thumb { background: #333a47; border-radius: 5px; }
   .tlx::-webkit-scrollbar-thumb:hover { background: #454e5f; }
 
+  .detail-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+  .detail-head h2 { margin: 0; }
+  .zoom { color: var(--muted); font-size: 12px; }
+  .zoom[open] { display: flex; align-items: center; gap: 8px; }
+  .zoom summary { cursor: pointer; font-size: 11px; }
+  .zoom summary:hover { color: var(--text); }
+  .zoom summary:focus-visible { outline: 1px solid var(--accent); outline-offset: 3px; }
+  .zoom-controls { display: none; align-items: center; gap: 8px; }
+  .zoom[open] .zoom-controls { display: flex; }
+  .zoom button { width: 30px; height: 30px; padding: 0; background: #232833; color: var(--text); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 18px; line-height: 1; }
+  .zoom button:hover:not(:disabled) { border-color: var(--accent); }
+  .zoom button:disabled { opacity: .45; cursor: default; }
+  .zoom input { width: 110px; accent-color: var(--accent); }
+  .zoom output { min-width: 42px; text-align: right; font-variant-numeric: tabular-nums; }
+
   .tlx-inner { position: relative; width: max-content; min-width: 100%; }
 
   .tl-row { display: flex; align-items: stretch; position: relative; z-index: 2; height: 34px; width: 100%; }
@@ -195,7 +210,18 @@
   </section>
 
   <section>
-    <h2 id="detailHead">Day detail</h2>
+    <div class="detail-head">
+      <h2 id="detailHead">Day detail</h2>
+      <details class="zoom" aria-label="Timeline zoom">
+        <summary id="zoomSummary" title="Adjust timeline zoom">100%</summary>
+        <div class="zoom-controls">
+          <button id="zoomOut" type="button" aria-label="Zoom out" title="Zoom out">−</button>
+          <input id="zoomRange" type="range" min="50" max="300" step="25" value="100" aria-label="Zoom level" />
+          <output id="zoomValue" for="zoomRange">100%</output>
+          <button id="zoomIn" type="button" aria-label="Zoom in" title="Zoom in">+</button>
+        </div>
+      </details>
+    </div>
     <div class="panel">
       <div class="tlx" id="tlx">
         <div class="tlx-inner" id="tlxInner"></div>
@@ -217,6 +243,7 @@ const state = {
   selected: null,
   timeline: null,
   dayWidth: 0,
+  zoom: 1,
   tlDigest: null,
   calDigest: null,
   cellJson: {},
@@ -338,7 +365,24 @@ document.getElementById('grid').addEventListener('click', e => {
 
 // ------------------------------------------------------------ timeline
 
-function dayWidthFor() { return window.innerWidth < 700 ? 170 : 270; }
+function dayWidthFor() {
+  const leftWidth = parseFloat(css('--leftw')) || 0;
+  return Math.max(1, tlx.clientWidth - leftWidth) * state.zoom;
+}
+
+function setZoom(value) {
+  state.zoom = Math.max(0.5, Math.min(3, value));
+  state.dayWidth = dayWidthFor();
+  const zoomLabel = `${Math.round(state.zoom * 100)}%`;
+  document.getElementById('zoomRange').value = String(Math.round(state.zoom * 100));
+  document.getElementById('zoomValue').value = zoomLabel;
+  document.getElementById('zoomSummary').textContent = zoomLabel;
+  document.getElementById('zoomOut').disabled = state.zoom <= 0.5;
+  document.getElementById('zoomIn').disabled = state.zoom >= 3;
+  const keep = state.selected;
+  renderTimeline();
+  if (keep) focusDay(keep, false);
+}
 
 function paneWidths() {
   const tl = state.timeline;
@@ -458,6 +502,12 @@ tlx.addEventListener('scroll', () => {
   state.scrollTimer = setTimeout(syncSticky, 120);
 }, { passive: true });
 
+document.getElementById('zoomRange').addEventListener('input', e => {
+  setZoom(Number(e.target.value) / 100);
+});
+document.getElementById('zoomOut').addEventListener('click', () => setZoom(state.zoom - 0.25));
+document.getElementById('zoomIn').addEventListener('click', () => setZoom(state.zoom + 0.25));
+
 // ------------------------------------------------------------ tooltip
 
 const tipEl = document.createElement('div');
@@ -569,7 +619,7 @@ window.addEventListener('resize', () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
     const w = dayWidthFor();
-    if (w === state.dayWidth) return;
+    if (Math.abs(w - state.dayWidth) < 1) return;
     const keep = state.selected;
     state.dayWidth = w;
     state.tlDigest = null;

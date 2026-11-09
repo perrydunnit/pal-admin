@@ -1,32 +1,78 @@
 # paladmin — Palworld admin dashboard
 
-Shows live player state and a calendar of who was online when.
-Managed as a Dockge stack; served at **https://pal-admin.example.com**.
+Live player state for a Palworld dedicated server, plus a timeline of who was
+online when. Built for this deployment, portable to any
+[thijsvanloef/palworld-server-docker](https://github.com/thijsvanloef/palworld-server-docker)
+server with the REST API enabled.
+
+- **Live**: stat cards, who is online now, all-time per-player stats
+- **History**: monthly calendar, and a continuous month timeline with a sticky
+  player column where a session crossing midnight is one unbroken bar
+
+Served at **https://pal-admin.example.com** behind HTTP basic auth.
+
+## Quick start
+
+```bash
+cp .env.example .env      # fill in ADMIN_PASSWORD (the game's admin password)
+docker compose up -d --build
+```
+
+The game stack must already be running — this reads from it and from its
+container log.
 
 ## Data sources
 
 | Source | Used for |
 |---|---|
-| Game REST API `/v1/api/players` | live roster, level, IP, platform |
-| Game REST API `/v1/api/metrics` | fps, world day, base camps |
-| Game container log (via Docker socket) | exact join/leave timestamps |
+| `http://palworld-server:8212` (REST API) | live roster, level, IP, platform, fps, world day, base camps |
+| the game container's log, via `docker.sock` (read-only) | exact join/leave timestamps |
 
 Both are reconciled every `POLL_SECONDS` into SQLite at `./data/paladmin.db`.
 
+## Repository layout
+
+```
+app.py                 Flask app: collector thread + JSON endpoints
+templates/index.html   the whole UI (no build step, no external deps)
+compose.yaml           Dockge stack: service, Traefik labels, basic auth
+Dockerfile             python:3.12-slim + gunicorn, single worker
+requirements.txt       flask, gunicorn, requests, docker
+.env.example           every setting, placeholder values only
+scripts/deploy.sh      publish this checkout to the server
+docs/                  see below
+data/                  SQLite runtime state (gitignored)
+```
+
+## Documentation
+
+| Doc | Contents |
+|---|---|
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Where it runs, host paths, DNS, TLS, deploy/rollback, backups |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Data sources, ingestion rules, DB schema, timing |
+| [docs/API.md](docs/API.md) | Endpoints and every field they return |
+| [docs/PALWORLD-SERVER.md](docs/PALWORLD-SERVER.md) | The game stack this reads from: settings, discovery, NAT |
+| [docs/ENHANCEMENTS.md](docs/ENHANCEMENTS.md) | Gotchas and known gaps to read before changing things |
+
+## Ground rules
+
+- **Never commit `.env`.** `.gitignore` covers it; `.env.example` is the
+  documented template.
+- **One gunicorn worker.** The collector is a thread started at import; extra
+  workers would poll and write concurrently.
+- **Deploying this does not touch the game.** They are separate stacks; this one
+  can be rebuilt freely at any time.
+
+## Behaviour notes
+
 The log is the only source of history, and Docker only keeps the log of the
-*current* container — so history starts when this stack is first started and
-resets if the game container is recreated. Events already ingested are kept in
-`data/paladmin.db`, so the calendar survives restarts of the game.
+*current* container — so history starts when this stack is first started, and
+new events are missed while the game container is down. Events already ingested
+are kept in `data/paladmin.db`, so recorded history survives restarts of either
+container.
 
 Player **levels** are only obtainable while a player is online, so the level
 column reads `—` until that player next logs in.
-
-## Files
-
-- `compose.yaml` — service, Traefik labels, basic-auth middleware
-- `app.py` — collector + Flask app (single worker; background thread)
-- `templates/index.html` — dashboard UI
-- `data/` — SQLite database (persisted)
 
 ## Timeline
 
@@ -69,10 +115,19 @@ bcrypt hash, and replace the value in the `paladmin-auth` label.
 
 ## Operations
 
+From a checkout, publish and rebuild in one step:
+
+```bash
+scripts/deploy.sh          # add --dry-run to preview the file list
+```
+
+On the server:
+
 ```bash
 cd /opt/stacks/paladmin
 docker compose up -d --build     # apply code/UI changes
 docker compose logs -f           # collector warnings show here
 ```
 
-Restarting this stack has no effect on the game server.
+Restarting this stack has no effect on the game server. Full runbook, including
+rollback: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).

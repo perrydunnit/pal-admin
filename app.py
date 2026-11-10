@@ -44,7 +44,6 @@ MAP_BOUNDS = (349400.0, 724400.0, -1099400.0, -724400.0)
 MAP_GAME_X_OFFSET = 158000.0
 MAP_GAME_Y_OFFSET = 123888.0
 MAP_GAME_SCALE = 459.0
-MAP_TEXTURE_SIZE = 8192.0
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 _db_lock = threading.Lock()
@@ -476,12 +475,13 @@ def map_point(x, y):
         return None
     nx = (y - min_y) / (max_y - min_y)
     ny = (max_x - x) / (max_x - min_x)
-    px, py = nx * MAP_TEXTURE_SIZE, ny * MAP_TEXTURE_SIZE
+    # The player-facing map read-out swaps the axes, offsets the origin in world
+    # units and scales down to the values the game shows.
     return {
         "px": round(nx, 4),
         "py": round(ny, 4),
-        "map_x": round((py - MAP_GAME_X_OFFSET) / MAP_GAME_SCALE),
-        "map_y": round((px + MAP_GAME_Y_OFFSET) / MAP_GAME_SCALE),
+        "map_x": round((y - MAP_GAME_X_OFFSET) / MAP_GAME_SCALE),
+        "map_y": round((x + MAP_GAME_Y_OFFSET) / MAP_GAME_SCALE),
     }
 
 

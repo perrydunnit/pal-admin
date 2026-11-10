@@ -214,10 +214,13 @@ Positions use the community Palpagos calibration:
 bounds = (maxX, maxY, minX, minY) = (349400, 724400, -1099400, -724400)
 nx = (y - minY) / (maxY - minY)          # screen X follows world Y
 ny = (maxX - x) / (maxX - minX)          # screen Y follows world X
-map_x = (ny * 8192 - 158000) / 459       # the in-game read-out
-map_y = (nx * 8192 + 123888) / 459
+map_x = (y - 158000) / 459               # the in-game read-out
+map_y = (x + 123888) / 459
 ```
 
+`px`/`py` are the normalised plot position (0–1, origin top-left); `map_x`/
+`map_y` are the numbers a player sees on the in-game map — e.g. exampleplayer at world
+`(-347954, 263915)` plots at `(0.682, 0.481)` and reads `X 231 Y -488`.
 `map_point()` returns `null` for coordinates outside the map (instances, the
 World Tree), and the UI simply omits those markers. The map itself is a
 schematic grid — the Palpagos texture is copyrighted, so it is neither bundled

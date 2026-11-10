@@ -66,7 +66,7 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
       "y": 263915.38,
       "map": {                   // null when offline or outside the map
         "px": 0.6822, "py": 0.4813,
-        "map_x": -336, "map_y": 282
+        "map_x": 231, "map_y": -488
       },
       "online": false,
       "session_started": null,   // ISO start of the open session when online
@@ -134,12 +134,12 @@ Palpagos (instances, the World Tree).
   "players": [
     { "id": "P1", "name": "exampleplayer", "level": 43, "hp": 880, "max_hp": 1000,
       "guild_id": "G1", "guild": "Pals", "active": true,
-      "px": 0.68, "py": 0.48, "map_x": -336, "map_y": 282,
+      "px": 0.68, "py": 0.48, "map_x": 231, "map_y": -488,
       "party": [ { "id": "O1", "name": "Lamball", "level": 12, "hp": 80, "max_hp": 90 } ] }
   ],
   "bases": [
     { "id": "BOX1", "name": "Lakeside base", "guild": "Pals",
-      "px": 0.67, "py": 0.49, "map_x": -335, "map_y": 282,
+      "px": 0.67, "py": 0.49, "map_x": 228, "map_y": -485,
       "workers": [ { "id": "B1", "name": "Digtoise", "level": 22 } ] }
   ],
   "guilds": [ { "id": "G1", "name": "Pals", "players": 1, "bases": 1, "pals": 4 } ],

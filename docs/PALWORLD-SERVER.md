@@ -81,19 +81,51 @@ RCON (`:25575`, bound to loopback) answers `ShowPlayers`, `Info`, `Broadcast`,
 `KickPlayer`, `BanPlayer`, `Save`, `Shutdown`, `DoExit`. It carries nothing the
 REST API does not.
 
-## game-data (world snapshot)
+## game-data (world snapshot) — enabled
 
-`GET /v1/api/game-data` returns `Time`, `FPS`, `AverageFPS` and an actor array of
-`Character` (`Player`, `OtomoPal`, `BaseCampPal`, `WildPal`, `NPC`) and `PalBox`
-objects, with names, trainer/guild ids, level, HP, coordinates, rotation,
-action and active state. That is the only source of guilds, base camps and pals.
+`GET /v1/api/game-data` returns `Time`, `FPS`, `AverageFPS`, `InGameTime`,
+`InGameDays` and an `ActorData` array of `Character` (`Player`, `OtomoPal`,
+`BaseCampPal`, `WildPal`, `NPC`) and `PalBox` objects, with names, guild ids,
+level, HP, coordinates, rotation, action and active state. That is the only
+source of guilds, base camps and pals.
 
-It is off by default: the endpoint answers
-`404 PalGameDataBridge GameData API is not enabled`. Enable it with the
-`-EnableGameDataAPI` launch argument (some builds also need
-`-enable-gamedata-api`) — which means editing this stack's `.env`/compose and
-**restarting the game server**. Ask the user first; see "Restarting the game
-safely" below.
+It is **on**. Two things had to change on this stack, because
+`thijsvanloef/palworld-server-docker` assembles the launch command from a fixed
+set of env vars and has no pass-through for extra arguments:
+
+1. `/opt/stacks/palworld/enable-gamedata.sh` — a small entrypoint wrapper that
+   appends `-EnableGameDataAPI -enable-gamedata-api` to the image's
+   `start.sh` (the lowercase switch is needed by some 1.0.x builds) and refuses
+   to start if it cannot find the argument block rather than silently running
+   without the flag.
+2. `compose.yaml` — `entrypoint: ["/bin/bash", "/usr/local/bin/enable-gamedata.sh"]`
+   and a read-only mount of that file at `/usr/local/bin/enable-gamedata.sh`.
+
+The pre-change file is kept next to it as `compose.yaml.bak-<timestamp>`.
+
+Restart used (never `docker restart`):
+
+```bash
+cd /opt/stacks/palworld
+docker compose stop      # SIGTERM, 30 s grace; log shows "Shutdown handler: cleanup"
+docker compose up -d     # recreates because the entrypoint changed
+```
+
+Revert: remove the `entrypoint:` line and the wrapper mount from `compose.yaml`
+(or restore the `.bak`), then `docker compose stop && docker compose up -d`.
+The dashboard degrades on its own — it keeps plotting REST positions and shows
+the "needs -EnableGameDataAPI" notice.
+
+Real payload quirks worth knowing (the dashboard's parser handles them):
+
+- `InstanceID` is compound: `<playerId> : <runtimeActorId>`.
+- Base workers (`BaseCampPal`) have an **empty** `TrainerInstanceID`; only
+  `GuildID` and position distinguish them. The dashboard attaches them to the
+  nearest PalBox in the same guild.
+- `PalBox` has no `InstanceID` and reports the untranslated template name
+  `新規生成拠点テンプレート名N(仮)`.
+- Actors only include what is currently loaded: party pals appear when summoned,
+  wild pals depend on where players are.
 
 ## Community listing (why consoles can connect)
 

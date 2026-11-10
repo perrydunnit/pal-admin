@@ -21,7 +21,7 @@ export default function MapPlot({ players, bases, selectedId, onSelect }) {
         {bases.map((base) => (
           <g className="base" key={base.id} transform={`translate(${base.px * 100} ${base.py * 100})`}>
             <rect x="-2.6" y="-2.6" width="5.2" height="5.2" rx="1" style={{ stroke: base.color }} />
-            <text x="0" y="-4.2" textAnchor="middle">{base.name}</text>
+            <text x="0" y="5.8" textAnchor="middle">{base.name}</text>
           </g>
         ))}
 

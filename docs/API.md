@@ -45,6 +45,13 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
   "chat": [                      // last 60 lines, oldest first
     { "ts": "2026-11-09T20:21:44+00:00", "name": "Player2", "message": "Lvl 18 ancient tech unlock" }
   ],
+  "world": {                     // /v1/api/game-data; see below
+    "available": false,
+    "reason": "disabled",
+    "detail": "PalGameDataBridge GameData API is not enabled",
+    "checked": "2026-11-09T22:51:57+00:00",
+    "ts": null, "counts": null, "players": [], "bases": [], "guilds": []
+  },
   "players": [
     {
       "player_id": "0123456789ABCDEF0000000000000000",
@@ -57,6 +64,10 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
       "ping": 32.2,              // ms, last reported while online
       "x": -347954.16,           // world coordinates, last reported online
       "y": 263915.38,
+      "map": {                   // null when offline or outside the map
+        "px": 0.6822, "py": 0.4813,
+        "map_x": -336, "map_y": 282
+      },
       "online": false,
       "session_started": null,   // ISO start of the open session when online
       "total_seconds": 17548,    // all-time, all sessions
@@ -95,6 +106,44 @@ The browser uses this instead of a timer. If the stream cannot be opened, or
 drops, the page falls back to fetching `/api/summary` every 30 s. At most
 `MAX_STREAMS` (default 4) connections are served; beyond that the endpoint
 returns `503 {"error": "too many live streams"}`.
+
+## The `world` block
+
+Read from `GET /v1/api/game-data`, reduced to the shapes below. When the game
+was not started with `-EnableGameDataAPI` the endpoint 404s and the block stays
+in its unavailable form, so clients can render a placeholder and keep polling —
+it flips to `available: true` on its own once the flag is enabled.
+
+`reason` is one of `disabled` (404 — feature off), `error` (request or parse
+failure), `unsupported` (reserved) or `unknown` (not probed yet).
+
+`px`/`py` are normalised map positions (0–1, origin top-left) and `map_x`/
+`map_y` the in-game map read-out. Both are `null` for coordinates outside
+Palpagos (instances, the World Tree).
+
+```jsonc
+{
+  "available": true,
+  "ts": "2026-11-09T23:00:00+00:00",
+  "time": "Day 207 14:30",       // game-local, opaque
+  "fps": 59, "fps_avg": 59.3,
+  "counts": { "players": 2, "party_pals": 3, "base_pals": 3,
+              "wild_pals": 41, "npcs": 5, "bases": 2, "other": 0 },
+  "players": [
+    { "id": "P1", "name": "exampleplayer", "level": 43, "hp": 880, "max_hp": 1000,
+      "guild_id": "G1", "guild": "Pals", "active": true,
+      "px": 0.68, "py": 0.48, "map_x": -336, "map_y": 282,
+      "party": [ { "id": "O1", "name": "Lamball", "level": 12, "hp": 80, "max_hp": 90 } ] }
+  ],
+  "bases": [
+    { "id": "BOX1", "name": "Lakeside base", "guild": "Pals",
+      "px": 0.67, "py": 0.49, "map_x": -335, "map_y": 282,
+      "workers": [ { "id": "B1", "name": "Digtoise", "level": 22 } ] }
+  ],
+  "guilds": [ { "id": "G1", "name": "Pals", "players": 1, "bases": 1, "pals": 4 } ],
+  "unattributed_pals": 0        // pals whose trainer/base was not in the snapshot
+}
+```
 
 ## GET /api/timeline?month=YYYY-MM
 

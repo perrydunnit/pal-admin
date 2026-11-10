@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import docker
 import requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, request, send_from_directory
 
 TZ = ZoneInfo(os.environ.get("TZ", "UTC"))
 PAL_API = os.environ.get("PAL_API", "http://palworld-server:8212").rstrip("/")
@@ -27,12 +27,26 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 PAL_CONTAINER = os.environ.get("PAL_CONTAINER", "palworld-server")
 DB_PATH = os.environ.get("DB_PATH", "/data/paladmin.db")
+STATIC_DIR = os.environ.get(
+    "STATIC_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
 MIN_POLL_GAP = float(os.environ.get("MIN_POLL_GAP", "2"))
 INFO_REFRESH_SECONDS = int(os.environ.get("INFO_REFRESH_SECONDS", "1800"))
 MAX_STREAMS = int(os.environ.get("MAX_STREAMS", "4"))
+GAME_DATA_SECONDS = int(os.environ.get("GAME_DATA_SECONDS", "20"))
+GAME_DATA_RETRY_SECONDS = int(os.environ.get("GAME_DATA_RETRY_SECONDS", "300"))
 
-app = Flask(__name__)
+# Palpagos map calibration, from the community map pipeline (world units are
+# Unreal centimetres). bounds = (maxX, maxY, minX, minY); the map axis is
+# swapped: screen X follows world Y, screen Y follows world X.  The game-map
+# read-out is a separate scale/offset.
+MAP_BOUNDS = (349400.0, 724400.0, -1099400.0, -724400.0)
+MAP_GAME_X_OFFSET = 158000.0
+MAP_GAME_Y_OFFSET = 123888.0
+MAP_GAME_SCALE = 459.0
+MAP_TEXTURE_SIZE = 8192.0
+
+app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 _db_lock = threading.Lock()
 
 # Bumped whenever stored state changes; SSE subscribers wait on it instead of
@@ -43,6 +57,11 @@ _rev_cond = threading.Condition()
 wake = threading.Event()
 _streams = 0
 _stream_lock = threading.Lock()
+# Latest game-data projection; replaced wholesale by poll_world().
+world = {"available": False, "reason": "unknown", "detail": "not probed yet",
+         "checked": None, "ts": None, "counts": None,
+         "players": [], "bases": [], "guilds": []}
+_world_lock = threading.Lock()
 
 
 def publish():
@@ -444,6 +463,201 @@ def collector():
             time.sleep(max(0.0, MIN_POLL_GAP - (time.monotonic() - started)))
 
 
+# ------------------------------------------------------------------ game data
+
+def map_point(x, y):
+    """Unreal world units → normalised map position and the in-game map read-out."""
+    try:
+        x, y = float(x), float(y)
+    except (TypeError, ValueError):
+        return None
+    max_x, max_y, min_x, min_y = MAP_BOUNDS
+    if not (min_x <= x <= max_x and min_y <= y <= max_y):
+        return None
+    nx = (y - min_y) / (max_y - min_y)
+    ny = (max_x - x) / (max_x - min_x)
+    px, py = nx * MAP_TEXTURE_SIZE, ny * MAP_TEXTURE_SIZE
+    return {
+        "px": round(nx, 4),
+        "py": round(ny, 4),
+        "map_x": round((py - MAP_GAME_X_OFFSET) / MAP_GAME_SCALE),
+        "map_y": round((px + MAP_GAME_Y_OFFSET) / MAP_GAME_SCALE),
+    }
+
+
+def _field(actor, *names, default=None):
+    for name in names:
+        if name in actor and actor[name] not in (None, ""):
+            return actor[name]
+    return default
+
+
+def _number(value):
+    try:
+        return round(float(value), 1)
+    except (TypeError, ValueError):
+        return None
+
+
+def _unit(actor):
+    """Name/level/health/position for one actor, whatever casing the API uses."""
+    position = map_point(_field(actor, "LocationX", "location_x", "X", "x"),
+                         _field(actor, "LocationY", "location_y", "Y", "y"))
+    item = {
+        "id": str(_field(actor, "InstanceID", "instance_id", "instanceId", default="")),
+        "name": str(_field(actor, "NickName", "nickname", "Nickname", "Name", default="")),
+        "level": _number(_field(actor, "level", "Level")),
+        "hp": _number(_field(actor, "HP", "hp")),
+        "max_hp": _number(_field(actor, "MaxHP", "max_hp", "MaxHp")),
+        "active": str(_field(actor, "IsActive", "is_active", default="")).lower() == "true",
+        "guild_id": str(_field(actor, "GuildID", "guild_id", default="")),
+        "guild": str(_field(actor, "GuildName", "guild_name", default="")),
+        "trainer_id": str(_field(actor, "TrainerInstanceID", "trainer_instance_id", default="")),
+        "trainer": str(_field(actor, "TrainerNickName", "trainer_nickname", default="")),
+        "class": str(_field(actor, "Class", "class", default="")),
+        "action": str(_field(actor, "Action", "action", default="")),
+    }
+    if position:
+        item.update(position)
+    return item
+
+
+def project_world(actors, now):
+    """Reduce an actor snapshot to the dashboard's world payload."""
+    by_id = {}
+    palboxes, party, workers = [], {}, {}
+    counts = {"players": 0, "party_pals": 0, "base_pals": 0, "wild_pals": 0,
+              "npcs": 0, "bases": 0, "other": 0}
+
+    for actor in actors:
+        if not isinstance(actor, dict):
+            continue
+        item = _unit(actor)
+        unit = str(_field(actor, "UnitType", "unit_type", "unitType", default="")).lower()
+        kind = str(_field(actor, "Type", "type", default="")).lower()
+        if kind == "palbox":
+            counts["bases"] += 1
+            item["name"] = item["name"] or "Base camp"
+            palboxes.append(item)
+            continue
+        if unit == "player":
+            counts["players"] += 1
+            by_id.setdefault(item["id"], item)
+            continue
+        if unit == "otomopal":
+            counts["party_pals"] += 1
+            party.setdefault(item["trainer_id"], []).append(item)
+        elif unit == "basecamppal":
+            counts["base_pals"] += 1
+            workers.setdefault(item["trainer_id"], []).append(item)
+        elif unit == "wildpal":
+            counts["wild_pals"] += 1
+        elif unit == "npc":
+            counts["npcs"] += 1
+        else:
+            counts["other"] += 1
+
+    players = sorted(by_id.values(), key=lambda p: (p["name"] or p["id"]).lower())
+    for player in players:
+        player["party"] = party.pop(player["id"], [])
+    bases = sorted(palboxes, key=lambda b: (b["name"], b["id"]))
+    for base in bases:
+        base["workers"] = workers.pop(base["id"], [])
+    unattributed = list(party.values()) + list(workers.values())
+
+    guilds = {}
+    for actor in players + bases:
+        key = actor["guild_id"] or actor["guild"] or "unknown"
+        entry = guilds.setdefault(key, {
+            "id": actor["guild_id"], "name": actor["guild"] or "Unknown guild",
+            "players": 0, "bases": 0, "pals": 0,
+        })
+        if actor.get("party") is not None:
+            entry["players"] += 1
+            entry["pals"] += len(actor["party"])
+        else:
+            entry["bases"] += 1
+            entry["pals"] += len(actor["workers"])
+
+    return {
+        "available": True,
+        "reason": None,
+        "detail": None,
+        "checked": iso(now),
+        "ts": iso(now),
+        "counts": counts,
+        "players": players,
+        "bases": bases,
+        "guilds": sorted(guilds.values(), key=lambda g: (-g["players"], g["name"].lower())),
+        "unattributed_pals": sum(len(v) for v in unattributed),
+    }
+
+
+def _world_unavailable(reason, detail, now):
+    return {
+        "available": False,
+        "reason": reason,
+        "detail": detail,
+        "checked": iso(now),
+        "ts": None,
+        "counts": None,
+        "players": [],
+        "bases": [],
+        "guilds": [],
+        "unattributed_pals": 0,
+    }
+
+
+def poll_world():
+    """Fetch /v1/api/game-data. Returns True when the snapshot was usable."""
+    global world
+    now = now_utc()
+    try:
+        resp = requests.get(
+            f"{PAL_API}/v1/api/game-data",
+            auth=(ADMIN_USER, ADMIN_PASSWORD),
+            timeout=20,
+        )
+    except Exception as exc:
+        snapshot = _world_unavailable("error", str(exc)[:200], now)
+    else:
+        if resp.status_code == 404:
+            snapshot = _world_unavailable(
+                "disabled", (resp.text or "game-data endpoint not available").strip()[:200], now)
+        elif resp.status_code != 200:
+            snapshot = _world_unavailable("error", f"HTTP {resp.status_code}", now)
+        else:
+            try:
+                payload = resp.json()
+                actors = payload if isinstance(payload, list) else next(
+                    (v for v in payload.values() if isinstance(v, list)), [])
+                snapshot = project_world(actors, now)
+                if isinstance(payload, dict):
+                    snapshot["time"] = _field(payload, "Time", "time")
+                    snapshot["fps"] = _number(_field(payload, "FPS", "fps"))
+                    snapshot["fps_avg"] = _number(_field(payload, "AverageFPS", "average_fps"))
+            except Exception as exc:
+                snapshot = _world_unavailable("error", f"unparsable snapshot: {exc}"[:200], now)
+
+    with _world_lock:
+        changed = json.dumps(snapshot, sort_keys=True) != json.dumps(world, sort_keys=True)
+        world = snapshot
+    if changed:
+        publish()
+    return snapshot["available"]
+
+
+def world_loop():
+    time.sleep(3)
+    while True:
+        try:
+            ok = poll_world()
+        except Exception as exc:
+            app.logger.exception("world poll failed: %s", exc)
+            ok = False
+        time.sleep(GAME_DATA_SECONDS if ok else GAME_DATA_RETRY_SECONDS)
+
+
 # ------------------------------------------------------------------- queries
 
 def session_rows(conn, start=None, end=None):
@@ -475,6 +689,8 @@ def split_by_day(row, lo, hi):
 
 def summary_payload(month=None):
     now = now_utc()
+    with _world_lock:
+        world_snapshot = dict(world)
     if month:
         year, mon = (int(x) for x in month.split("-"))
     else:
@@ -526,6 +742,7 @@ def summary_payload(month=None):
             "ping": meta["ping"],
             "x": meta["last_x"],
             "y": meta["last_y"],
+            "map": map_point(meta["last_x"], meta["last_y"]),
             "online": pid in open_by_player,
             "session_started": open_by_player[pid]["started_at"] if pid in open_by_player else None,
             "total_seconds": round(agg["seconds"]),
@@ -567,6 +784,7 @@ def summary_payload(month=None):
         "trend": [dict(r) for r in reversed(trend)],
         "server": server or None,
         "chat": [dict(r) for r in reversed(chat)],
+        "world": world_snapshot,
         "now": iso(now),
     }
 
@@ -776,13 +994,24 @@ def api_range():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return send_from_directory(app.static_folder, "index.html")
+
+
+@app.after_request
+def cache_headers(response):
+    if request.path.startswith("/static/assets/"):
+        # Vite fingerprints these file names, so they are safe to pin.
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif request.path == "/" or request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # Started at import so it also runs under a WSGI server (single worker only).
 init_db()
 threading.Thread(target=follow_logs, daemon=True).start()
 threading.Thread(target=collector, daemon=True).start()
+threading.Thread(target=world_loop, daemon=True).start()
 
 
 if __name__ == "__main__":

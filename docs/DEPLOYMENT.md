@@ -78,7 +78,7 @@ scripts/deploy.sh --dry-run    # preview what would be copied
 scripts/deploy.sh              # copy, rebuild, recreate, wait for health
 ```
 
-The script copies `app.py`, `templates/`, `docs/`, `compose.yaml`, `Dockerfile`,
+The script copies `app.py`, `frontend/`, `docs/`, `compose.yaml`, `Dockerfile`,
 `requirements.txt` and `README.md` to `/opt/stacks/paladmin` — **never `.env`** —
 then runs `docker compose up -d --build` there.
 

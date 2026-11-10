@@ -36,26 +36,24 @@ else
 fi
 
 # ---------------------------------------------------------------- 2. frontend
-if [ -z "$NODE" ]; then
-  skip "JS syntax (node not installed)"
+NPM=$(command -v npm || true)
+if [ -z "$NODE" ] || [ -z "$NPM" ]; then
+  skip "frontend (node/npm not installed)"
+elif [ ! -d frontend/node_modules ]; then
+  skip "frontend (run 'npm install' in frontend/)"
 else
   tmp=$(mktemp -d)
-  if "$PY" - "$tmp/check.js" <<'PY'
-import re, sys
-html = open("templates/index.html", encoding="utf-8").read()
-m = re.search(r"<script>(.*)</script>", html, re.S)
-if not m:
-    sys.exit("no <script> block in templates/index.html")
-open(sys.argv[1], "w", encoding="utf-8").write(m.group(1))
-PY
-  then
-    if "$NODE" --check "$tmp/check.js" 2>"$tmp/err"; then
-      pass "template JS parses"
-    else
-      bad "template JS error: $(head -3 "$tmp/err")"
-    fi
+  if (cd frontend && "$NPM" test --silent >"$tmp/test" 2>&1); then
+    pass "frontend unit tests"
   else
-    bad "could not extract the <script> block"
+    bad "frontend unit tests: $(tail -4 "$tmp/test" | tr '\n' ' ')"
+  fi
+  if [ "$FAST" = 1 ]; then
+    skip "frontend build (fast mode)"
+  elif (cd frontend && "$NPM" run build --silent >"$tmp/build" 2>&1); then
+    pass "frontend builds"
+  else
+    bad "frontend build: $(tail -4 "$tmp/build" | tr '\n' ' ')"
   fi
   rm -rf "$tmp"
 fi

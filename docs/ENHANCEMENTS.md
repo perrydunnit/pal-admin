@@ -5,10 +5,11 @@ building this, not a suggestion.
 
 ## Things that will bite
 
-**Single gunicorn worker.** `init_db()` and the collector thread start at import.
-Raising `--workers` above 1 gives every worker its own collector: duplicate polls,
-duplicate `metrics` rows, and racy session opens. If you need concurrency, scale
-with `--threads` only.
+**Single gunicorn worker.** `init_db()` and the collector + log-follower threads
+start at import. Raising `--workers` above 1 gives every worker its own
+collector: duplicate polls, duplicate `metrics` rows, and racy session opens. If
+you need concurrency, scale with `--threads` only (each live SSE stream occupies
+one).
 
 **The collector assumes one writer.** `_db_lock` is per-process. Any second
 process writing to `paladmin.db` must not rely on it. A separate ingestion script
@@ -25,8 +26,16 @@ close the wrong session (the API reconciliation usually fixes it within 90 s).
 Storing a name→id map keyed by time would be a real improvement.
 
 **Recreating the game container resets its log.** Anything not yet ingested is
-unrecoverable. If history matters more than freshness, ingest on-demand rather
-than only on the poll, or reduce `POLL_SECONDS`.
+unrecoverable. Ingestion is now streaming, so the window is small, but a recreate
+still drops lines the follower had not read.
+
+**The log stream can lag a few seconds.** The game flushes stdout on its own
+schedule; measured arrivals ranged from 18 ms to 4.1 s after the event. Do not
+promise sub-second presence in the UI copy.
+
+**Every SSE connection holds a gunicorn thread.** `--threads 8` in the Dockerfile
+is the ceiling; `MAX_STREAMS` (4) keeps two threads free for ordinary requests.
+Raising the thread count is safe, raising `--workers` is not.
 
 **`--force-recreate`, not `restart`,** is required for `.env` changes; Compose does
 not always diff env-file values on `up -d`.
@@ -41,8 +50,9 @@ blob/disk comparisons diverge.
   the stack is one container with no Node toolchain. Keep it that way unless
   there's a strong reason.
 - **Diffed refreshes.** Panes and calendar cells compare their JSON before
-  rebuilding, and updates are skipped while scrolling. Re-rendering wholesale
-  causes visible flicker and loses scroll position — the original bug report.
+  rebuilding. Re-rendering wholesale causes visible flicker and loses scroll
+  position — the original bug report. This is what keeps the push path safe:
+  a frame that changes nothing touches no DOM.
 - **Fractions, not pixels.** The API returns 0–1 positions; the client applies
   day width. Do not move pixel maths into the backend, or the month layout
   becomes fixed for all screens.
@@ -65,6 +75,10 @@ blob/disk comparisons diverge.
   ever confuses anyone.
 - **`trend` is fetched but unused** by the current UI — cheap, but dead until a
   sparkline exists.
+- **No map yet.** `location_x`/`location_y` are collected and served but the UI
+  does not plot them; that needs a world→pixel calibration for the map image.
+- **`game-data` is unavailable** on this server until the game is restarted with
+  `-EnableGameDataAPI`. That is the only source of guilds, base camps and pals.
 - **No tests.** Verification so far has been ad-hoc scripted checks (syntax,
   boundaries, sticky geometry). The pure functions (`split_by_day`,
   `_clip_session`, `range_payload`, `timeline_payload`) are the obvious first

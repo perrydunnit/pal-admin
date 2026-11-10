@@ -9,6 +9,7 @@ Serves a single-page dashboard with player stats and a presence calendar.
 
 import calendar as calmod
 import datetime as dt
+import json
 import os
 import re
 import sqlite3
@@ -27,9 +28,30 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 PAL_CONTAINER = os.environ.get("PAL_CONTAINER", "palworld-server")
 DB_PATH = os.environ.get("DB_PATH", "/data/paladmin.db")
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
+MIN_POLL_GAP = float(os.environ.get("MIN_POLL_GAP", "2"))
+INFO_REFRESH_SECONDS = int(os.environ.get("INFO_REFRESH_SECONDS", "1800"))
+MAX_STREAMS = int(os.environ.get("MAX_STREAMS", "4"))
 
 app = Flask(__name__)
 _db_lock = threading.Lock()
+
+# Bumped whenever stored state changes; SSE subscribers wait on it instead of
+# re-reading the database on a timer.
+_rev = 0
+_rev_cond = threading.Condition()
+# Set by the log follower so a join/leave is reflected by an API poll at once.
+wake = threading.Event()
+_streams = 0
+_stream_lock = threading.Lock()
+
+
+def publish():
+    """Tell connected browsers something changed."""
+    global _rev
+    with _rev_cond:
+        _rev += 1
+        _rev_cond.notify_all()
+
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sessions (
@@ -51,7 +73,11 @@ CREATE TABLE IF NOT EXISTS players (
     level       INTEGER,
     first_seen  TEXT,
     last_seen   TEXT,
-    last_ip     TEXT
+    last_ip     TEXT,
+    account_name TEXT,
+    ping        REAL,
+    last_x      REAL,
+    last_y      REAL
 );
 
 CREATE TABLE IF NOT EXISTS metrics (
@@ -60,7 +86,10 @@ CREATE TABLE IF NOT EXISTS metrics (
     fps         REAL,
     days        INTEGER,
     basecamps   INTEGER,
-    uptime      INTEGER
+    uptime      INTEGER,
+    fps_avg     REAL,
+    frametime   REAL,
+    maxplayernum INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -71,7 +100,35 @@ CREATE TABLE IF NOT EXISTS events (
     player_id   TEXT,
     PRIMARY KEY (ts, kind, name)
 );
+
+CREATE TABLE IF NOT EXISTS chat (
+    ts          TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    message     TEXT NOT NULL,
+    PRIMARY KEY (ts, name, message)
+);
+
+CREATE TABLE IF NOT EXISTS server (
+    key         TEXT PRIMARY KEY,
+    value       TEXT
+);
 """
+
+# Added after the first release; created above for fresh databases, patched in
+# for existing ones.
+ADDED_COLUMNS = {
+    "players": [("account_name", "TEXT"), ("ping", "REAL"), ("last_x", "REAL"),
+                ("last_y", "REAL")],
+    "metrics": [("fps_avg", "REAL"), ("frametime", "REAL"), ("maxplayernum", "INTEGER")],
+}
+
+
+def _add_missing_columns(conn):
+    for table, columns in ADDED_COLUMNS.items():
+        have = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns:
+            if name not in have:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 def db():
@@ -85,6 +142,7 @@ def init_db():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     with db() as conn:
         conn.executescript(SCHEMA)
+        _add_missing_columns(conn)
 
 
 def now_utc():
@@ -114,6 +172,9 @@ JOIN_RE = re.compile(
 LEFT_RE = re.compile(
     r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[LOG\] (.+?) left the server\."
 )
+CHAT_RE = re.compile(
+    r"\[(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\] \[CHAT\] <(.+?)> (.*)"
+)
 
 
 def local_to_utc(stamp):
@@ -130,21 +191,25 @@ def open_session_for(conn, player_id):
 
 
 def upsert_player(conn, player_id, name=None, platform=None, level=None,
-                  seen=None, ip=None):
+                  seen=None, ip=None, account_name=None, ping=None, x=None, y=None):
     row = conn.execute("SELECT player_id FROM players WHERE player_id = ?", (player_id,)).fetchone()
     seen_iso = iso(seen) if seen else None
     if row is None:
         conn.execute(
-            "INSERT INTO players(player_id, name, platform, level, first_seen, last_seen, last_ip)"
-            " VALUES(?,?,?,?,?,?,?)",
-            (player_id, name, platform, level, seen_iso, seen_iso, ip),
+            "INSERT INTO players(player_id, name, platform, level, first_seen, last_seen,"
+            " last_ip, account_name, ping, last_x, last_y)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            (player_id, name, platform, level, seen_iso, seen_iso, ip,
+             account_name, ping, x, y),
         )
         return
     conn.execute(
         "UPDATE players SET name=COALESCE(?, name), platform=COALESCE(?, platform),"
         " level=COALESCE(?, level), last_seen=COALESCE(?, last_seen),"
-        " last_ip=COALESCE(?, last_ip) WHERE player_id=?",
-        (name, platform, level, seen_iso, ip, player_id),
+        " last_ip=COALESCE(?, last_ip), account_name=COALESCE(?, account_name),"
+        " ping=COALESCE(?, ping), last_x=COALESCE(?, last_x), last_y=COALESCE(?, last_y)"
+        " WHERE player_id=?",
+        (name, platform, level, seen_iso, ip, account_name, ping, x, y, player_id),
     )
 
 
@@ -179,41 +244,115 @@ def handle_left(conn, ts, name):
         conn.execute("UPDATE sessions SET ended_at=? WHERE id=?", (iso(ts), open_row["id"]))
 
 
-def ingest_logs():
-    """Replay join/leave events from the container log, each event exactly once."""
-    try:
-        client = docker.from_env()
-        container = client.containers.get(PAL_CONTAINER)
-        with db() as conn:
-            last = conn.execute("SELECT MAX(ts) AS m FROM events").fetchone()["m"]
-        since = 1
-        if last:
-            since = max(1, int(parse_iso(last).timestamp()) - 120)
-        raw = container.logs(since=since, timestamps=False).decode("utf-8", "replace")
-    except Exception as exc:
-        app.logger.warning("log ingest skipped: %s", exc)
-        return
+def apply_log_line(conn, line):
+    """Apply one log line. Returns "presence", "chat" or None."""
+    chat = CHAT_RE.search(line)
+    if chat:
+        ts = local_to_utc(chat.group(1))
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO chat(ts, name, message) VALUES(?,?,?)",
+            (iso(ts), chat.group(2), chat.group(3)),
+        )
+        return "chat" if cur.rowcount else None
 
-    events = []
-    for m in JOIN_RE.finditer(raw):
-        events.append((local_to_utc(m.group(1)), "join", m.group(2), m.group(3), m.group(4)))
-    for m in LEFT_RE.finditer(raw):
-        events.append((local_to_utc(m.group(1)), "left", m.group(2), None, None))
-    events.sort(key=lambda e: e[0])
+    m = JOIN_RE.search(line)
+    if m:
+        ts = local_to_utc(m.group(1))
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO events(ts, kind, name, user_id, player_id)"
+            " VALUES(?,?,?,?,?)",
+            (iso(ts), "join", m.group(2), m.group(3), m.group(4)),
+        )
+        if cur.rowcount == 0:
+            return None  # already applied on an earlier pass
+        handle_join(conn, ts, m.group(2), m.group(3), m.group(4))
+        return "presence"
 
+    m = LEFT_RE.search(line)
+    if m:
+        ts = local_to_utc(m.group(1))
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO events(ts, kind, name, user_id, player_id)"
+            " VALUES(?,?,?,?,?)",
+            (iso(ts), "left", m.group(2), None, None),
+        )
+        if cur.rowcount == 0:
+            return None
+        handle_left(conn, ts, m.group(2))
+        return "presence"
+    return None
+
+
+def apply_lines(raw_lines):
+    """Ingest a batch of log lines, then nudge the poller and the browsers."""
+    presence = dirty = False
     with _db_lock, db() as conn:
-        for ts, kind, name, user_id, player_id in events:
-            cur = conn.execute(
-                "INSERT OR IGNORE INTO events(ts, kind, name, user_id, player_id)"
-                " VALUES(?,?,?,?,?)",
-                (iso(ts), kind, name, user_id, player_id),
-            )
-            if cur.rowcount == 0:
-                continue  # already applied on an earlier pass
-            if kind == "join":
-                handle_join(conn, ts, name, user_id, player_id)
-            else:
-                handle_left(conn, ts, name)
+        for raw in raw_lines:
+            line = raw.decode("utf-8", "replace") if isinstance(raw, bytes) else raw
+            kind = apply_log_line(conn, line)
+            if kind == "presence":
+                presence = dirty = True
+            elif kind == "chat":
+                dirty = True
+    if presence:
+        wake.set()  # a join/leave changes the roster; reconcile now, not on the tick
+    if dirty:
+        publish()
+
+
+def follow_logs():
+    """Stream the game log so joins, leaves and chat arrive as they happen.
+
+    `since` replays whatever happened while this container was down before
+    switching to live lines, and the event table's primary key makes the replay
+    idempotent. A stopped or recreated game container ends the stream; the loop
+    reconnects and picks up from the newest stored event.
+    """
+    backoff = 5
+    while True:
+        try:
+            container = docker.from_env().containers.get(PAL_CONTAINER)
+            with db() as conn:
+                last = conn.execute("SELECT MAX(ts) AS m FROM events").fetchone()["m"]
+            since = 1
+            if last:
+                since = max(1, int(parse_iso(last).timestamp()) - 120)
+            buf = b""
+            for chunk in container.logs(stream=True, follow=True, since=since,
+                                        timestamps=False):
+                buf += chunk
+                parts = buf.split(b"\n")
+                buf = parts.pop()
+                if parts:
+                    apply_lines(parts)
+            if buf:
+                apply_lines([buf])
+            backoff = 5
+        except Exception as exc:
+            app.logger.warning("log stream interrupted: %s", exc)
+        time.sleep(backoff)
+        backoff = min(backoff * 2, 60)  # a stopped game must not flood the log
+
+
+def fetch_server_info(now):
+    """Static server identity, refreshed rarely — it only changes on an update."""
+    with db() as conn:
+        row = conn.execute("SELECT value FROM server WHERE key='fetched_at'").fetchone()
+    if row and now.timestamp() - float(row["value"]) < INFO_REFRESH_SECONDS:
+        return None
+    try:
+        info = requests.get(
+            f"{PAL_API}/v1/api/info",
+            auth=(ADMIN_USER, ADMIN_PASSWORD),
+            timeout=10,
+        ).json()
+    except Exception as exc:
+        app.logger.warning("server info fetch failed: %s", exc)
+        return None
+    return [(key, str(info.get(key) or "")) for key in
+            ("version", "servername", "description", "worldguid")] + [
+        ("fetched_at", str(now.timestamp()))
+    ]
 
 
 def poll_api():
@@ -234,8 +373,11 @@ def poll_api():
         return
 
     now = now_utc()
+    info_rows = fetch_server_info(now)
     online = set()
     with _db_lock, db() as conn:
+        if info_rows:
+            conn.executemany("INSERT OR REPLACE INTO server(key, value) VALUES(?,?)", info_rows)
         for p in players:
             pid = p.get("playerId")
             if not pid or pid == "None":
@@ -250,6 +392,10 @@ def poll_api():
                 level=p.get("level"),
                 seen=now,
                 ip=p.get("iP"),
+                account_name=p.get("accountName"),
+                ping=p.get("ping"),
+                x=p.get("location_x"),
+                y=p.get("location_y"),
             )
             if open_session_for(conn, pid) is None:
                 conn.execute(
@@ -266,28 +412,36 @@ def poll_api():
             conn.execute("UPDATE sessions SET ended_at=? WHERE id=?", (iso(now), row["id"]))
 
         conn.execute(
-            "INSERT OR REPLACE INTO metrics(ts, playernum, fps, days, basecamps, uptime)"
-            " VALUES(?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO metrics(ts, playernum, fps, fps_avg, frametime, days,"
+            " basecamps, maxplayernum, uptime) VALUES(?,?,?,?,?,?,?,?,?)",
             (
                 iso(now),
                 metrics.get("currentplayernum"),
                 metrics.get("serverfpsaverage") or metrics.get("serverfps"),
+                metrics.get("serverfpsaverage"),
+                metrics.get("serverframetime"),
                 metrics.get("days"),
                 metrics.get("basecampnum"),
+                metrics.get("maxplayernum"),
                 metrics.get("uptime"),
             ),
         )
+    publish()
 
 
 def collector():
     time.sleep(2)
     while True:
+        started = time.monotonic()
         try:
-            ingest_logs()
             poll_api()
         except Exception as exc:
             app.logger.exception("collector iteration failed: %s", exc)
-        time.sleep(POLL_SECONDS)
+        # The heartbeat keeps trends and world counters moving; a log event
+        # shortens the wait so a join shows up in about a second.
+        if wake.wait(POLL_SECONDS):
+            wake.clear()
+            time.sleep(max(0.0, MIN_POLL_GAP - (time.monotonic() - started)))
 
 
 # ------------------------------------------------------------------- queries
@@ -345,6 +499,10 @@ def summary_payload(month=None):
         trend = conn.execute(
             "SELECT ts, playernum, fps FROM metrics ORDER BY ts DESC LIMIT 240"
         ).fetchall()
+        server = {r["key"]: r["value"] for r in conn.execute("SELECT * FROM server")}
+        chat = conn.execute(
+            "SELECT ts, name, message FROM chat ORDER BY ts DESC LIMIT 60"
+        ).fetchall()
 
     totals = {}
     for row in all_sessions:
@@ -364,6 +522,10 @@ def summary_payload(month=None):
             "level": meta["level"],
             "last_seen": meta["last_seen"],
             "ip": meta["last_ip"],
+            "account_name": meta["account_name"],
+            "ping": meta["ping"],
+            "x": meta["last_x"],
+            "y": meta["last_y"],
             "online": pid in open_by_player,
             "session_started": open_by_player[pid]["started_at"] if pid in open_by_player else None,
             "total_seconds": round(agg["seconds"]),
@@ -403,6 +565,8 @@ def summary_payload(month=None):
         "players": player_rows,
         "metrics": dict(metrics_row) if metrics_row else None,
         "trend": [dict(r) for r in reversed(trend)],
+        "server": server or None,
+        "chat": [dict(r) for r in reversed(chat)],
         "now": iso(now),
     }
 
@@ -538,6 +702,44 @@ def api_timeline():
         return jsonify(error=str(exc)), 400
 
 
+@app.route("/api/events")
+def api_events():
+    """Server-sent events: one push per state change instead of a 30 s poll."""
+    global _streams
+    with _stream_lock:
+        if _streams >= MAX_STREAMS:
+            return jsonify(error="too many live streams"), 503
+        _streams += 1
+
+    def stream():
+        global _streams
+        seen = None
+        try:
+            while True:
+                with _rev_cond:
+                    if seen == _rev:
+                        _rev_cond.wait(10)
+                    current = _rev
+                if current == seen:
+                    yield ": keepalive\n\n"
+                    continue
+                seen = current
+                try:
+                    payload = summary_payload(None)
+                except Exception as exc:
+                    app.logger.exception("live payload failed: %s", exc)
+                    continue
+                yield f"event: update\ndata: {json.dumps(payload)}\n\n"
+        finally:
+            with _stream_lock:
+                _streams -= 1
+
+    resp = app.response_class(stream(), mimetype="text/event-stream")
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
+
+
 @app.route("/healthz")
 def healthz():
     return jsonify(status="ok")
@@ -579,6 +781,7 @@ def index():
 
 # Started at import so it also runs under a WSGI server (single worker only).
 init_db()
+threading.Thread(target=follow_logs, daemon=True).start()
 threading.Thread(target=collector, daemon=True).start()
 
 

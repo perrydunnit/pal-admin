@@ -100,14 +100,31 @@ container does not miss lines.
 - A join or leave sets `wake`, so the poller reconciles the roster immediately
   instead of waiting for the heartbeat (debounced by `MIN_POLL_GAP`, 2 s).
 
-**API reconciliation.** For each returned player, upsert `players` (including
-`accountName`, `ping`, coordinates), and open a session if none is open
-(`source='poll'`). Then close any open session whose player was not returned —
-unless it started less than 90 s ago, which avoids closing a session that a
-concurrent join just created.
+**API reconciliation.** For each returned player, resolve the identity, upsert
+`players` (including `accountName`, `ping`, coordinates), and open a session if
+none is open (`source='poll'`). Then close any open session whose player was not
+returned — unless it started less than 90 s ago, which avoids closing a session
+that a concurrent join just created.
 
 Net effect: exact boundaries when the log has them, a correct live view when it
 does not, and both within about a second.
+
+**Player identity.** `/v1/api/players` reports `playerId: "None"` and the
+*platform account* as `name` for the few seconds while a character is still
+loading. Keying anything on that creates a throwaway second player — the
+`exampleplayer` / `exampleplayer-account` and `otherplayer` / `otherplayer-account` pairs that appeared
+on the timeline. So:
+
+- `resolve_player_id()` prefers the real id and otherwise looks for a row
+  already known for that account (`players.user_id`), only inventing a
+  placeholder if the account has never been seen;
+- `merge_identity()` runs whenever both ids are present: it moves the
+  placeholder's sessions onto the real id, keeps the earlier `first_seen`,
+  drops a duplicate open session if the log already opened one, and deletes the
+  placeholder row;
+- `repair_identities()` runs at startup to fold placeholders left by older
+  builds, but only when exactly one real id is known for the account — a
+  deleted-and-recreated character legitimately has two.
 
 ## Schema
 
@@ -120,7 +137,7 @@ sessions(id, player_id, user_id, started_at, ended_at, source)
 CREATE UNIQUE INDEX ux_open_session ON sessions(player_id) WHERE ended_at IS NULL;
 
 players(player_id PK, name, platform, level, first_seen, last_seen, last_ip,
-        account_name, ping, last_x, last_y)
+        account_name, ping, last_x, last_y, user_id)
 
 metrics(ts PK, playernum, fps, fps_avg, frametime, days, basecamps,
         maxplayernum, uptime)                             -- one row per poll

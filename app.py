@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS players (
     account_name TEXT,
     ping        REAL,
     last_x      REAL,
-    last_y      REAL
+    last_y      REAL,
+    user_id     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS metrics (
@@ -136,7 +137,7 @@ CREATE TABLE IF NOT EXISTS server (
 # for existing ones.
 ADDED_COLUMNS = {
     "players": [("account_name", "TEXT"), ("ping", "REAL"), ("last_x", "REAL"),
-                ("last_y", "REAL")],
+                ("last_y", "REAL"), ("user_id", "TEXT")],
     "metrics": [("fps_avg", "REAL"), ("frametime", "REAL"), ("maxplayernum", "INTEGER")],
 }
 
@@ -161,6 +162,9 @@ def init_db():
     with db() as conn:
         conn.executescript(SCHEMA)
         _add_missing_columns(conn)
+        # After the migration, so it works on a database created before user_id.
+        conn.execute("CREATE INDEX IF NOT EXISTS ix_players_user ON players(user_id)")
+        repair_identities(conn)
 
 
 def now_utc():
@@ -208,32 +212,109 @@ def open_session_for(conn, player_id):
     ).fetchone()
 
 
+PLATFORM_PREFIXES = ("steam_", "ps5_", "xbox_", "mac_")
+
+
+def resolve_player_id(conn, player_id, user_id):
+    """Prefer the real Palworld id, falling back to the platform account.
+
+    `/v1/api/players` reports `playerId: "None"` for a few seconds while a
+    player is still loading, and the `name` it reports then is the platform
+    account rather than the character. Keying on the account creates a
+    throwaway second player, so look for a row already known for that account
+    before inventing one.
+    """
+    if player_id and player_id != "None":
+        return player_id
+    if not user_id:
+        return None
+    row = conn.execute(
+        "SELECT player_id FROM players WHERE user_id = ? AND player_id != ?"
+        " ORDER BY last_seen DESC LIMIT 1",
+        (user_id, user_id),
+    ).fetchone()
+    return row["player_id"] if row else user_id
+
+
+def merge_identity(conn, player_id, user_id):
+    """Fold a `<platform>_<account>` placeholder row into the real player row."""
+    if not player_id or not user_id or player_id == user_id:
+        return False
+    alias = conn.execute("SELECT * FROM players WHERE player_id = ?", (user_id,)).fetchone()
+    alias_open = open_session_for(conn, user_id)
+    if alias is None and alias_open is None:
+        return False
+
+    real_open = open_session_for(conn, player_id)
+    if alias_open is not None:
+        if real_open is None:
+            conn.execute("UPDATE sessions SET player_id=? WHERE id=?", (player_id, alias_open["id"]))
+        else:
+            # The same connection was recorded twice; keep the earlier start.
+            if parse_iso(alias_open["started_at"]) < parse_iso(real_open["started_at"]):
+                conn.execute("UPDATE sessions SET started_at=? WHERE id=?",
+                             (alias_open["started_at"], real_open["id"]))
+            conn.execute("DELETE FROM sessions WHERE id=?", (alias_open["id"],))
+    conn.execute("UPDATE sessions SET player_id=? WHERE player_id=?", (player_id, user_id))
+
+    if alias is not None:
+        current = conn.execute("SELECT first_seen FROM players WHERE player_id = ?",
+                               (player_id,)).fetchone()
+        if current is not None and alias["first_seen"] and (
+                not current["first_seen"] or alias["first_seen"] < current["first_seen"]):
+            conn.execute("UPDATE players SET first_seen=? WHERE player_id=?",
+                         (alias["first_seen"], player_id))
+        conn.execute("DELETE FROM players WHERE player_id=?", (user_id,))
+    return True
+
+
+def repair_identities(conn):
+    """Merge placeholder rows left behind by earlier polling (runs at startup)."""
+    aliases = [
+        row["player_id"] for row in conn.execute("SELECT player_id FROM players")
+        if row["player_id"].startswith(PLATFORM_PREFIXES)
+    ]
+    for alias in aliases:
+        candidates = [row["player_id"] for row in conn.execute(
+            "SELECT DISTINCT player_id FROM sessions WHERE user_id = ? AND player_id != ?",
+            (alias, alias))]
+        if len(candidates) != 1:
+            continue  # unknown, or a genuine character recreation
+        conn.execute("UPDATE players SET user_id=? WHERE player_id=?", (alias, candidates[0]))
+        merge_identity(conn, candidates[0], alias)
+
+
 def upsert_player(conn, player_id, name=None, platform=None, level=None,
-                  seen=None, ip=None, account_name=None, ping=None, x=None, y=None):
+                  seen=None, ip=None, account_name=None, ping=None, x=None, y=None,
+                  user_id=None):
     row = conn.execute("SELECT player_id FROM players WHERE player_id = ?", (player_id,)).fetchone()
     seen_iso = iso(seen) if seen else None
     if row is None:
         conn.execute(
             "INSERT INTO players(player_id, name, platform, level, first_seen, last_seen,"
-            " last_ip, account_name, ping, last_x, last_y)"
-            " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            " last_ip, account_name, ping, last_x, last_y, user_id)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (player_id, name, platform, level, seen_iso, seen_iso, ip,
-             account_name, ping, x, y),
+             account_name, ping, x, y, user_id),
         )
         return
     conn.execute(
         "UPDATE players SET name=COALESCE(?, name), platform=COALESCE(?, platform),"
         " level=COALESCE(?, level), last_seen=COALESCE(?, last_seen),"
         " last_ip=COALESCE(?, last_ip), account_name=COALESCE(?, account_name),"
-        " ping=COALESCE(?, ping), last_x=COALESCE(?, last_x), last_y=COALESCE(?, last_y)"
+        " ping=COALESCE(?, ping), last_x=COALESCE(?, last_x), last_y=COALESCE(?, last_y),"
+        " user_id=COALESCE(?, user_id)"
         " WHERE player_id=?",
-        (name, platform, level, seen_iso, ip, account_name, ping, x, y, player_id),
+        (name, platform, level, seen_iso, ip, account_name, ping, x, y, user_id, player_id),
     )
 
 
 def handle_join(conn, ts, name, user_id, player_id):
+    # A poll may already have recorded this connection under the account id.
+    merge_identity(conn, player_id, user_id)
     open_row = open_session_for(conn, player_id)
-    upsert_player(conn, player_id, name=name, platform=platform_of(user_id), seen=ts)
+    upsert_player(conn, player_id, name=name, platform=platform_of(user_id), seen=ts,
+                  user_id=user_id)
     if open_row is not None:
         delta = abs((parse_iso(open_row["started_at"]) - ts).total_seconds())
         if delta <= 180:
@@ -397,16 +478,18 @@ def poll_api():
         if info_rows:
             conn.executemany("INSERT OR REPLACE INTO server(key, value) VALUES(?,?)", info_rows)
         for p in players:
-            pid = p.get("playerId")
-            if not pid or pid == "None":
-                pid = p.get("userId")
+            raw_id = p.get("playerId")
+            user_id = p.get("userId")
+            pid = resolve_player_id(conn, raw_id, user_id)
             if not pid:
                 continue
+            if raw_id and raw_id != "None":
+                merge_identity(conn, pid, user_id)
             online.add(pid)
             upsert_player(
                 conn, pid,
                 name=p.get("name"),
-                platform=platform_of(p.get("userId")),
+                platform=platform_of(user_id),
                 level=p.get("level"),
                 seen=now,
                 ip=p.get("iP"),
@@ -414,12 +497,13 @@ def poll_api():
                 ping=p.get("ping"),
                 x=p.get("location_x"),
                 y=p.get("location_y"),
+                user_id=user_id,
             )
             if open_session_for(conn, pid) is None:
                 conn.execute(
                     "INSERT INTO sessions(player_id, user_id, started_at, ended_at, source)"
                     " VALUES(?,?,?,NULL,'poll')",
-                    (pid, p.get("userId"), iso(now)),
+                    (pid, user_id, iso(now)),
                 )
 
         for row in conn.execute("SELECT * FROM sessions WHERE ended_at IS NULL").fetchall():

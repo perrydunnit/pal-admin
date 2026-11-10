@@ -91,8 +91,16 @@ blob/disk comparisons diverge.
   `split_by_day`, `_clip_session`, `range_payload`, `timeline_payload`,
   `map_point` and `project_world` are still checked by ad-hoc scripts only.
   They take plain data and are the obvious next targets.
-- **Player rename** creates a second `players` row if the REST API reports a new
-  `playerId`; a rename in name only updates in place.
+-   **`playerId` is `"None"` while a character loads.** The API then reports the
+  platform account as `name`, so anything keyed on that pair creates a phantom
+  player (two timeline rows for one person). Identity resolution and
+  `merge_identity()` handle it; never reintroduce a bare
+  `pid = playerId or userId` fallback.
+
+  **Player identity is resolved, not guessed.** `repair_identities()` merges a
+  `<platform>_<account>` placeholder only when exactly one real id is known for
+  that account. If such a row ever survives a restart, inspect
+  `sessions.user_id` before merging by hand — it may be a recreated character.
 - **No auth inside the app.** All gating is Traefik basic auth. Running the
   container on a network without that proxy exposes it.
 - **Session repair is best-effort.** A crash leaves a session open; the next poll

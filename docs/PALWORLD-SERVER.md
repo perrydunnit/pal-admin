@@ -61,7 +61,39 @@ TZ=America/Denver
 
 If `ENABLE_PLAYER_LOGGING` is turned off, history stops accruing: the app still
 shows live state from the REST API, but the log regexes find nothing and
-`sessions` will only contain poll-derived rows.
+`sessions` will only contain poll-derived rows. The chat panel goes quiet too.
+
+## What the REST API exposes
+
+Verified against `v1.0.5.102999`. Every route is request/response — there is no
+websocket, SSE or event endpoint.
+
+| Route | Contents |
+|---|---|
+| `GET /v1/api/info` | `version`, `servername`, `description`, `worldguid` |
+| `GET /v1/api/metrics` | `currentplayernum`, `serverfps`, `serverfpsaverage`, `serverframetime`, `days`, `maxplayernum`, `basecampnum`, `uptime` |
+| `GET /v1/api/players` | `name`, `accountName`, `playerId`, `userId`, `iP`, `ping`, `location_x`, `location_y`, `level` |
+| `GET /v1/api/settings` | the whole `PalWorldSettings.ini` — **including `AdminPassword` and `ServerPassword`**, so never proxy it raw |
+| `GET /v1/api/game-data` | world actor snapshot — **disabled** (see below) |
+| `POST` | `announce`, `kick`, `ban`, `unban`, `save`, `shutdown`, `stop` |
+
+RCON (`:25575`, bound to loopback) answers `ShowPlayers`, `Info`, `Broadcast`,
+`KickPlayer`, `BanPlayer`, `Save`, `Shutdown`, `DoExit`. It carries nothing the
+REST API does not.
+
+## game-data (world snapshot)
+
+`GET /v1/api/game-data` returns `Time`, `FPS`, `AverageFPS` and an actor array of
+`Character` (`Player`, `OtomoPal`, `BaseCampPal`, `WildPal`, `NPC`) and `PalBox`
+objects, with names, trainer/guild ids, level, HP, coordinates, rotation,
+action and active state. That is the only source of guilds, base camps and pals.
+
+It is off by default: the endpoint answers
+`404 PalGameDataBridge GameData API is not enabled`. Enable it with the
+`-EnableGameDataAPI` launch argument (some builds also need
+`-enable-gamedata-api`) — which means editing this stack's `.env`/compose and
+**restarting the game server**. Ask the user first; see "Restarting the game
+safely" below.
 
 ## Community listing (why consoles can connect)
 

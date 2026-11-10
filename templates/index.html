@@ -160,6 +160,9 @@
   .tip .note { color: var(--warn); margin-top: 3px; }
 
   .empty { color: var(--muted); font-size: 13px; padding: 16px; }
+  .muted { color: var(--muted); }
+  #chat table { min-width: 420px; }
+  #chat td.msg { white-space: pre-wrap; word-break: break-word; }
   .foot { color: var(--muted); font-size: 12px; margin-top: 24px; }
 
   @media (max-width: 700px) {
@@ -187,6 +190,11 @@
   <section>
     <h2>Online now</h2>
     <div class="panel x" id="live"></div>
+  </section>
+
+  <section>
+    <h2>Chat</h2>
+    <div class="panel x" id="chat"></div>
   </section>
 
   <section>
@@ -246,8 +254,10 @@ const state = {
   zoom: 1,
   tlDigest: null,
   calDigest: null,
+  chatDigest: null,
   cellJson: {},
   loading: false,
+  live: false,
   scrollTimer: null,
 };
 
@@ -276,12 +286,14 @@ function renderChrome() {
   const d = state.data, P = d.players;
   const live = P.filter(p => p.online);
   const totalSecs = P.reduce((a, p) => a + p.total_seconds, 0);
+  const cap = d.metrics?.maxplayernum;
   document.getElementById('sub').innerHTML =
-    `<span class="dot ${live.length ? 'on' : 'off'}"></span> ${live.length} online · ${P.length} players · world day ${d.metrics?.days ?? '—'}`;
+    `<span class="dot ${live.length ? 'on' : 'off'}"></span> ${live.length}${cap ? `/${cap}` : ''} online · ${P.length} players · world day ${d.metrics?.days ?? '—'}`;
 
+  const fps = d.metrics?.fps, fpsAvg = d.metrics?.fps_avg;
   document.getElementById('cards').innerHTML = [
-    ['Online', live.length, `${P.length} known`],
-    ['Server FPS', d.metrics?.fps != null ? Math.round(d.metrics.fps) : '—', ''],
+    ['Online', live.length, cap ? `of ${cap}` : `${P.length} known`],
+    ['Server FPS', fps != null ? Math.round(fps) : '—', fpsAvg != null ? `avg ${Math.round(fpsAvg)}` : ''],
     ['World day', d.metrics?.days ?? '—', ''],
     ['Base camps', d.metrics?.basecamps ?? '—', ''],
     ['Total playtime', hms(totalSecs), 'all players'],
@@ -291,18 +303,18 @@ function renderChrome() {
   document.getElementById('live').innerHTML = live.length ? `<table>
     <tr><th>Player</th><th>Platform</th><th class="num">Level</th><th>Online for</th><th class="num">Ping</th></tr>
     ${live.map(p => `<tr>
-      <td><span class="dot on"></span> ${esc(p.name)}</td>
+      <td title="${esc(p.account_name || '')}${p.ip ? ' · ' + esc(p.ip) : ''}"><span class="dot on"></span> ${esc(p.name)}</td>
       <td><span class="pill">${esc(p.platform)}</span></td>
       <td class="num">${p.level ?? '—'}</td>
       <td>${p.session_started ? hms((Date.now() - new Date(p.session_started)) / 1000) : '—'}</td>
-      <td class="num">${esc(p.ip || '—')}</td>
+      <td class="num">${p.ping != null ? `${Math.round(p.ping)} ms` : '—'}</td>
     </tr>`).join('')}</table>` : `<div class="empty">Nobody online right now.</div>`;
 
   const max = Math.max(1, ...P.map(p => p.total_seconds));
   document.getElementById('players').innerHTML = P.length ? `<table>
     <tr><th>Player</th><th>Platform</th><th class="num">Level</th><th class="num">Playtime</th><th>Sessions</th><th class="num">Avg session</th><th class="num">Last seen</th></tr>
     ${P.map(p => `<tr>
-      <td><span class="dot ${p.online ? 'on' : 'off'}"></span> ${esc(p.name)}</td>
+      <td title="${esc(p.account_name || '')}${p.ip ? ' · ' + esc(p.ip) : ''}"><span class="dot ${p.online ? 'on' : 'off'}"></span> ${esc(p.name)}</td>
       <td><span class="pill">${esc(p.platform)}</span></td>
       <td class="num">${p.level ?? '—'}</td>
       <td class="num">${hms(p.total_seconds)}<div class="bar"><i style="width:${Math.round(100 * p.total_seconds / max)}%"></i></div></td>
@@ -310,6 +322,26 @@ function renderChrome() {
       <td class="num">${p.sessions ? hms(p.avg_seconds) : '—'}</td>
       <td class="num">${p.last_seen ? clock(p.last_seen) : '—'}</td>
     </tr>`).join('')}</table>` : `<div class="empty">No players recorded yet.</div>`;
+}
+
+function renderChat() {
+  const chat = (state.data && state.data.chat) || [];
+  const digest = JSON.stringify(chat);
+  if (digest === state.chatDigest) return;
+  state.chatDigest = digest;
+  const el = document.getElementById('chat');
+  if (!chat.length) {
+    el.innerHTML = '<div class="empty">No chat yet.</div>';
+    return;
+  }
+  const rows = chat.slice(-40).reverse().map(m => `<tr>
+      <td class="num muted">${clock(m.ts)}</td>
+      <td>${esc(m.name)}</td>
+      <td class="msg">${esc(m.message)}</td>
+    </tr>`).join('');
+  el.innerHTML = `<table>
+    <tr><th class="num">When</th><th>Player</th><th>Message</th></tr>
+    ${rows}</table>`;
 }
 
 function cellInner(day) {
@@ -547,53 +579,117 @@ function hideTip() { tipEl.classList.remove('on'); }
 
 // ------------------------------------------------------------ load / refresh
 
+function setFoot() {
+  const version = state.data?.server?.version;
+  document.getElementById('foot').textContent =
+    `${state.live ? 'Live — updates are pushed as they happen'
+                  : 'Reconnecting — falling back to a 30 s refresh'} · last update ${new Date().toLocaleTimeString()}` +
+    (version ? ` · server ${version}` : '');
+}
+
+function applySummary(summary) {
+  state.data = summary;
+  state.month = summary.month;
+  renderChrome();
+  renderChat();
+  if (state.calDigest !== summary.month) {
+    state.calDigest = summary.month;
+    renderCalendar();
+  } else {
+    updateCells(summary.days);
+  }
+}
+
+function applyTimeline(timeline) {
+  const monthChanged = state.timeline == null || state.timeline.month !== timeline.month;
+  state.timeline = timeline;
+  state.dayWidth = dayWidthFor();
+
+  const digest = JSON.stringify({ d: timeline.days, s: timeline.sessions });
+  const keepLeft = monthChanged ? null : tlx.scrollLeft;
+  if (digest !== state.tlDigest || monthChanged) {
+    state.tlDigest = digest;
+    renderTimeline();
+    if (keepLeft != null) tlx.scrollLeft = keepLeft;
+    else focusDay(pickStartDay(timeline), false);
+    syncSticky();
+  } else if (timeline.now_frac != null) {
+    // live marker only
+    const line = tlxInner.querySelector('.nowline');
+    const { W } = paneWidths();
+    if (line) line.style.left = `${timeline.now_frac * W}px`;
+    else { renderTimeline(); tlx.scrollLeft = keepLeft ?? 0; }
+  }
+  document.getElementById('detailHead').textContent = `Day detail — ${timeline.month_label}`;
+}
+
 async function load(month) {
   if (state.loading) return;
   state.loading = true;
   try {
     const q = month ? `?month=${encodeURIComponent(month)}` : '';
     const summary = await (await fetch('/api/summary' + q)).json();
-    const timeline = await (await fetch('/api/timeline?month=' + summary.month)).json();
-
-    const monthChanged = state.month !== summary.month;
-    state.data = summary;
-    state.month = summary.month;
-    state.timeline = timeline;
-    state.dayWidth = dayWidthFor();
-
-    renderChrome();
-
-    if (state.calDigest !== summary.month) {
-      state.calDigest = summary.month;
-      renderCalendar();
-    } else {
-      updateCells(summary.days);
-    }
-
-    const digest = JSON.stringify({ d: timeline.days, s: timeline.sessions });
-    const keepLeft = monthChanged ? null : tlx.scrollLeft;
-    if (digest !== state.tlDigest || monthChanged) {
-      state.tlDigest = digest;
-      renderTimeline();
-      if (keepLeft != null) tlx.scrollLeft = keepLeft;
-      else focusDay(pickStartDay(timeline), false);
-      syncSticky();
-    } else if (timeline.now_frac != null) {
-      // live marker only
-      const line = tlxInner.querySelector('.nowline');
-      const { W } = paneWidths();
-      if (line) line.style.left = `${timeline.now_frac * W}px`;
-      else { renderTimeline(); tlx.scrollLeft = keepLeft ?? 0; }
-    }
-
-    document.getElementById('detailHead').textContent = `Day detail — ${timeline.month_label}`;
-    document.getElementById('foot').textContent =
-      `Auto-refreshes every 30s · last update ${new Date().toLocaleTimeString()}`;
+    if (state.month !== summary.month) state.tlDigest = null;
+    applySummary(summary);
+    applyTimeline(await (await fetch('/api/timeline?month=' + summary.month)).json());
+    setFoot();
   } catch (err) {
     console.error('refresh failed', err);
   } finally {
     state.loading = false;
   }
+}
+
+// A push carries a fresh /api/summary. The timeline is derived from sessions,
+// so it is re-fetched once per burst rather than on every frame.
+let tlTimer = null;
+function queueTimeline() {
+  if (tlTimer) return;
+  tlTimer = setTimeout(async () => {
+    tlTimer = null;
+    try {
+      const timeline = await (await fetch('/api/timeline?month=' + state.month)).json();
+      if (timeline.month === state.month) applyTimeline(timeline);
+    } catch (err) {
+      console.error('timeline refresh failed', err);
+    }
+  }, 700);
+}
+
+function applyPush(summary) {
+  if (!state.data) return;
+  if (summary.month === state.month) {
+    applySummary(summary);
+    queueTimeline();
+  } else {
+    // Looking at another month: refresh the live panes, leave the calendar alone.
+    const d = state.data;
+    d.players = summary.players;
+    d.metrics = summary.metrics;
+    d.today = summary.today;
+    d.now = summary.now;
+    d.server = summary.server;
+    d.chat = summary.chat;
+    renderChrome();
+    renderChat();
+  }
+  setFoot();
+}
+
+function connectLive() {
+  const es = new EventSource('/api/events');
+  es.addEventListener('update', e => {
+    state.live = true;
+    try {
+      applyPush(JSON.parse(e.data));
+    } catch (err) {
+      console.error('live update failed', err);
+    }
+  });
+  es.onerror = () => {
+    state.live = false;
+    setFoot();
+  };
 }
 
 function pickStartDay(timeline) {
@@ -628,8 +724,11 @@ window.addEventListener('resize', () => {
   }, 150);
 });
 
-load();
-setInterval(() => load(state.month), 30000);
+load().then(connectLive);
+
+// Safety net: if the stream is unavailable (proxy, browser, too many tabs) the
+// page still refreshes like it used to.
+setInterval(() => { if (!state.live) load(state.month); }, 30000);
 </script>
 </body>
 </html>

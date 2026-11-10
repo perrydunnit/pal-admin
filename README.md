@@ -118,9 +118,23 @@ drawn as vertical rules labelled with the date of the day that starts there; the
 sticky date shows whichever day is at the left edge. Clicking a calendar day
 scrolls the timeline to that day.
 
-Refreshes only rewrite the panes and cells whose data actually changed, and skip
-entirely while the user is scrolling, so selection, scroll position and hover
-survive the 30-second poll.
+Updates only rewrite the panes and cells whose data actually changed, so
+selection, scroll position and hover survive a refresh. The page is not polled:
+`GET /api/events` pushes a fresh summary whenever state changes (join, leave,
+chat, or the 30 s metric heartbeat), with a 30 s fetch as the fallback if the
+stream is unavailable.
+
+## Live updates and chat
+
+The game offers no push API, so the freshness comes from two places:
+
+- the game container's log, streamed over the Docker socket — joins, leaves and
+  chat lines arrive within a few seconds (the game buffers stdout);
+- the REST API, polled on a 30 s heartbeat and immediately after a join/leave.
+
+Chat is stored in its own table and shown in the dashboard's chat panel. It
+comes from `[CHAT] <player> message` log lines, so it only exists from the point
+this stack has been running.
 
 ## Auth
 

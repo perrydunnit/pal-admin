@@ -9,7 +9,8 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
 | GET | `/` | the dashboard |
 | GET | `/healthz` | liveness, `{"status": "ok"}` |
 | GET | `/favicon.ico` | `204`, keeps the console clean |
-| GET | `/api/summary` | stats, live players, calendar rollup |
+| GET | `/api/summary` | stats, live players, calendar rollup, chat tail |
+| GET | `/api/events` | `text/event-stream`; pushes `/api/summary` on change |
 | GET | `/api/timeline?month=YYYY-MM` | continuous month timeline |
 | GET | `/api/day?date=YYYY-MM-DD` | one day's sessions |
 | GET | `/api/range?start=…&end=…` | per-day sessions for a range |
@@ -28,18 +29,34 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
     "ts": "2026-11-09T22:51:57+00:00",
     "playernum": 1,
     "fps": 59.2,
+    "fps_avg": 59.36,            // serverfpsaverage
+    "frametime": 16.78,          // milliseconds
     "days": 204,                 // in-game day counter
     "basecamps": 2,
+    "maxplayernum": 16,          // server slot count
     "uptime": 86778              // seconds the game process has been up
   },
+  "server": {                    // /v1/api/info, refreshed every 30 min
+    "version": "v1.0.5.102999",
+    "servername": "Palworld Admin",
+    "description": "…",
+    "worldguid": "ABCDEF01…"
+  },
+  "chat": [                      // last 60 lines, oldest first
+    { "ts": "2026-11-09T20:21:44+00:00", "name": "Player2", "message": "Lvl 18 ancient tech unlock" }
+  ],
   "players": [
     {
       "player_id": "0123456789ABCDEF0000000000000000",
       "name": "exampleplayer",
+      "account_name": "exampleplayer-account",   // platform account, not the character
       "platform": "ps5",         // parsed from userId prefix
       "level": null,             // only known while online
       "last_seen": "2026-11-08T01:05:44+00:00",
       "ip": "203.0.113.42",
+      "ping": 32.2,              // ms, last reported while online
+      "x": -347954.16,           // world coordinates, last reported online
+      "y": 263915.38,
       "online": false,
       "session_started": null,   // ISO start of the open session when online
       "total_seconds": 17548,    // all-time, all sessions
@@ -64,7 +81,20 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
 
 `players` is sorted online-first, then by playtime. `days` covers every day of
 the month, including empty ones, and `players[]` within a day is sorted by
-seconds descending.
+seconds descending. `x`/`y`/`ping` are the last values seen while the player was
+online, so only render them for `online: true`.
+
+## GET /api/events
+
+Server-sent events. On connect it sends one `event: update` frame containing the
+current `/api/summary` payload (current month), then another frame whenever
+stored state changes — a join, a leave, a chat line, or the 30 s metric
+heartbeat. A `: keepalive` comment goes out every 10 s while nothing happens.
+
+The browser uses this instead of a timer. If the stream cannot be opened, or
+drops, the page falls back to fetching `/api/summary` every 30 s. At most
+`MAX_STREAMS` (default 4) connections are served; beyond that the endpoint
+returns `503 {"error": "too many live streams"}`.
 
 ## GET /api/timeline?month=YYYY-MM
 
@@ -136,5 +166,5 @@ Missing parameters or a range wider than 92 days → `400 {"error": "…"}`.
 
 - `400` only for bad query parameters, always `{"error": "message"}`.
 - `5xx` means an unexpected failure; check `docker logs paladmin`.
-- The UI treats a failed refresh as non-fatal, logs it to the console and retries
-  on the next 30 s tick.
+- The UI treats a dropped push stream as non-fatal: it logs to the console and
+  falls back to a 30 s refresh until `EventSource` reconnects.

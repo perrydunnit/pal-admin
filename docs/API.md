@@ -109,10 +109,11 @@ returns `503 {"error": "too many live streams"}`.
 
 ## The `world` block
 
-Read from `GET /v1/api/game-data`, reduced to the shapes below. When the game
-was not started with `-EnableGameDataAPI` the endpoint 404s and the block stays
-in its unavailable form, so clients can render a placeholder and keep polling —
-it flips to `available: true` on its own once the flag is enabled.
+Read from `GET /v1/api/game-data`, reduced from its `ActorData` array to the
+shapes below. When the game was not started with `-EnableGameDataAPI` the
+endpoint 404s and the block stays in its unavailable form, so clients can render
+a placeholder and keep polling — it flips to `available: true` on its own once
+the flag is enabled.
 
 `reason` is one of `disabled` (404 — feature off), `error` (request or parse
 failure), `unsupported` (reserved) or `unknown` (not probed yet).
@@ -125,7 +126,8 @@ Palpagos (instances, the World Tree).
 {
   "available": true,
   "ts": "2026-11-09T23:00:00+00:00",
-  "time": "Day 207 14:30",       // game-local, opaque
+  "time": "18:19",              // InGameTime
+  "days": 207,                   // InGameDays
   "fps": 59, "fps_avg": 59.3,
   "counts": { "players": 2, "party_pals": 3, "base_pals": 3,
               "wild_pals": 41, "npcs": 5, "bases": 2, "other": 0 },

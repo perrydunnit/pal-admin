@@ -190,11 +190,12 @@ export default function WorldPanel({ summary }) {
             </div>
           ) : null}
 
-          {hasWorld && world.counts?.wild_pals ? (
+          {hasWorld ? (
             <div className="notice">
-              {world.counts.wild_pals} wild pals are loaded around the map right now
+              {world.days != null ? `Day ${Math.round(world.days)}` : 'World'}
+              {world.time ? ` · ${world.time}` : ''}
+              {world.counts?.wild_pals ? ` · ${world.counts.wild_pals} wild pals loaded` : ''}
               {world.fps_avg || world.fps ? ` · ${Math.round(world.fps_avg || world.fps)} FPS` : ''}
-              {world.time ? ` · in-game time ${world.time}` : ''}
             </div>
           ) : null}
         </div>

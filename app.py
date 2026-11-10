@@ -44,7 +44,6 @@ MAP_BOUNDS = (349400.0, 724400.0, -1099400.0, -724400.0)
 MAP_GAME_X_OFFSET = 158000.0
 MAP_GAME_Y_OFFSET = 123888.0
 MAP_GAME_SCALE = 459.0
-MAP_TEXTURE_SIZE = 8192.0
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
 _db_lock = threading.Lock()
@@ -476,12 +475,13 @@ def map_point(x, y):
         return None
     nx = (y - min_y) / (max_y - min_y)
     ny = (max_x - x) / (max_x - min_x)
-    px, py = nx * MAP_TEXTURE_SIZE, ny * MAP_TEXTURE_SIZE
+    # The player-facing map read-out swaps the axes, offsets the origin in world
+    # units and scales down to the values the game shows.
     return {
         "px": round(nx, 4),
         "py": round(ny, 4),
-        "map_x": round((py - MAP_GAME_X_OFFSET) / MAP_GAME_SCALE),
-        "map_y": round((px + MAP_GAME_Y_OFFSET) / MAP_GAME_SCALE),
+        "map_x": round((y - MAP_GAME_X_OFFSET) / MAP_GAME_SCALE),
+        "map_y": round((x + MAP_GAME_Y_OFFSET) / MAP_GAME_SCALE),
     }
 
 
@@ -490,6 +490,40 @@ def _field(actor, *names, default=None):
         if name in actor and actor[name] not in (None, ""):
             return actor[name]
     return default
+
+
+def _split_id(value):
+    """Game-data ids are '<playerId> : <runtimeActorId>' — keep the stable half."""
+    return str(value or "").split(" : ")[0].strip()
+
+
+def _base_name(raw):
+    """Bases are reported with the game's untranslated template placeholder."""
+    name = str(raw or "").strip()
+    if not name:
+        return "Unnamed base"
+    match = re.search(r"テンプレート名(\d+)", name)
+    if match:
+        return f"Unnamed base {int(match.group(1)) + 1}"
+    return name
+
+
+def _nearest_base(pal, bases):
+    """Base workers carry no trainer/base id, so use position within the guild."""
+    if not bases:
+        return None
+    if len(bases) == 1:
+        return bases[0]
+    if pal.get("px") is None or pal.get("py") is None:
+        return None
+    best, best_distance = None, None
+    for base in bases:
+        if base.get("px") is None or base.get("py") is None:
+            continue
+        distance = (base["px"] - pal["px"]) ** 2 + (base["py"] - pal["py"]) ** 2
+        if best_distance is None or distance < best_distance:
+            best, best_distance = base, distance
+    return best
 
 
 def _number(value):
@@ -504,7 +538,9 @@ def _unit(actor):
     position = map_point(_field(actor, "LocationX", "location_x", "X", "x"),
                          _field(actor, "LocationY", "location_y", "Y", "y"))
     item = {
-        "id": str(_field(actor, "InstanceID", "instance_id", "instanceId", default="")),
+        "id": _split_id(_field(actor, "InstanceID", "instance_id", "instanceId", default=""))
+              or str(_field(actor, "userid", "userId", default="")),
+        "runtime_id": str(_field(actor, "InstanceID", "instance_id", "instanceId", default="")),
         "name": str(_field(actor, "NickName", "nickname", "Nickname", "Name", default="")),
         "level": _number(_field(actor, "level", "Level")),
         "hp": _number(_field(actor, "HP", "hp")),
@@ -525,7 +561,7 @@ def _unit(actor):
 def project_world(actors, now):
     """Reduce an actor snapshot to the dashboard's world payload."""
     by_id = {}
-    palboxes, party, workers = [], {}, {}
+    palboxes, party, workers, loose_workers = [], {}, {}, []
     counts = {"players": 0, "party_pals": 0, "base_pals": 0, "wild_pals": 0,
               "npcs": 0, "bases": 0, "other": 0}
 
@@ -537,7 +573,10 @@ def project_world(actors, now):
         kind = str(_field(actor, "Type", "type", default="")).lower()
         if kind == "palbox":
             counts["bases"] += 1
-            item["name"] = item["name"] or "Base camp"
+            raw = item["name"]
+            item["raw_name"] = raw
+            item["name"] = _base_name(raw)
+            item["id"] = f"{item['guild_id']}:{raw}"
             palboxes.append(item)
             continue
         if unit == "player":
@@ -546,10 +585,14 @@ def project_world(actors, now):
             continue
         if unit == "otomopal":
             counts["party_pals"] += 1
-            party.setdefault(item["trainer_id"], []).append(item)
+            party.setdefault(_split_id(item["trainer_id"]), []).append(item)
         elif unit == "basecamppal":
             counts["base_pals"] += 1
-            workers.setdefault(item["trainer_id"], []).append(item)
+            trainer = _split_id(item["trainer_id"])
+            if trainer:
+                workers.setdefault(trainer, []).append(item)
+            else:
+                loose_workers.append(item)
         elif unit == "wildpal":
             counts["wild_pals"] += 1
         elif unit == "npc":
@@ -559,11 +602,22 @@ def project_world(actors, now):
 
     players = sorted(by_id.values(), key=lambda p: (p["name"] or p["id"]).lower())
     for player in players:
-        player["party"] = party.pop(player["id"], [])
+        player["party"] = sorted(party.pop(player["id"], []), key=lambda p: p["name"].lower())
+
     bases = sorted(palboxes, key=lambda b: (b["name"], b["id"]))
     for base in bases:
-        base["workers"] = workers.pop(base["id"], [])
-    unattributed = list(party.values()) + list(workers.values())
+        base["workers"] = sorted(workers.pop(base["id"], []), key=lambda p: p["name"].lower())
+
+    unattributed = sum(len(v) for v in party.values()) + sum(len(v) for v in workers.values())
+    for pal in loose_workers:
+        candidates = [b for b in bases if not pal["guild_id"] or b["guild_id"] == pal["guild_id"]]
+        base = _nearest_base(pal, candidates or bases)
+        if base is None:
+            unattributed += 1
+        else:
+            base["workers"].append(pal)
+    for base in bases:
+        base["workers"].sort(key=lambda p: p["name"].lower())
 
     guilds = {}
     for actor in players + bases:
@@ -589,7 +643,7 @@ def project_world(actors, now):
         "players": players,
         "bases": bases,
         "guilds": sorted(guilds.values(), key=lambda g: (-g["players"], g["name"].lower())),
-        "unattributed_pals": sum(len(v) for v in unattributed),
+        "unattributed_pals": unattributed,
     }
 
 
@@ -633,7 +687,8 @@ def poll_world():
                     (v for v in payload.values() if isinstance(v, list)), [])
                 snapshot = project_world(actors, now)
                 if isinstance(payload, dict):
-                    snapshot["time"] = _field(payload, "Time", "time")
+                    snapshot["time"] = _field(payload, "InGameTime", "Time", "time")
+                    snapshot["days"] = _number(_field(payload, "InGameDays", "days"))
                     snapshot["fps"] = _number(_field(payload, "FPS", "fps"))
                     snapshot["fps_avg"] = _number(_field(payload, "AverageFPS", "average_fps"))
             except Exception as exc:

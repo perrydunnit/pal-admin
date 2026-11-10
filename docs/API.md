@@ -66,7 +66,7 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
       "y": 263915.38,
       "map": {                   // null when offline or outside the map
         "px": 0.6822, "py": 0.4813,
-        "map_x": -336, "map_y": 282
+        "map_x": 231, "map_y": -488
       },
       "online": false,
       "session_started": null,   // ISO start of the open session when online
@@ -109,10 +109,11 @@ returns `503 {"error": "too many live streams"}`.
 
 ## The `world` block
 
-Read from `GET /v1/api/game-data`, reduced to the shapes below. When the game
-was not started with `-EnableGameDataAPI` the endpoint 404s and the block stays
-in its unavailable form, so clients can render a placeholder and keep polling —
-it flips to `available: true` on its own once the flag is enabled.
+Read from `GET /v1/api/game-data`, reduced from its `ActorData` array to the
+shapes below. When the game was not started with `-EnableGameDataAPI` the
+endpoint 404s and the block stays in its unavailable form, so clients can render
+a placeholder and keep polling — it flips to `available: true` on its own once
+the flag is enabled.
 
 `reason` is one of `disabled` (404 — feature off), `error` (request or parse
 failure), `unsupported` (reserved) or `unknown` (not probed yet).
@@ -125,19 +126,20 @@ Palpagos (instances, the World Tree).
 {
   "available": true,
   "ts": "2026-11-09T23:00:00+00:00",
-  "time": "Day 207 14:30",       // game-local, opaque
+  "time": "18:19",              // InGameTime
+  "days": 207,                   // InGameDays
   "fps": 59, "fps_avg": 59.3,
   "counts": { "players": 2, "party_pals": 3, "base_pals": 3,
               "wild_pals": 41, "npcs": 5, "bases": 2, "other": 0 },
   "players": [
     { "id": "P1", "name": "exampleplayer", "level": 43, "hp": 880, "max_hp": 1000,
       "guild_id": "G1", "guild": "Pals", "active": true,
-      "px": 0.68, "py": 0.48, "map_x": -336, "map_y": 282,
+      "px": 0.68, "py": 0.48, "map_x": 231, "map_y": -488,
       "party": [ { "id": "O1", "name": "Lamball", "level": 12, "hp": 80, "max_hp": 90 } ] }
   ],
   "bases": [
     { "id": "BOX1", "name": "Lakeside base", "guild": "Pals",
-      "px": 0.67, "py": 0.49, "map_x": -335, "map_y": 282,
+      "px": 0.67, "py": 0.49, "map_x": 228, "map_y": -485,
       "workers": [ { "id": "B1", "name": "Digtoise", "level": 22 } ] }
   ],
   "guilds": [ { "id": "G1", "name": "Pals", "players": 1, "bases": 1, "pals": 4 } ],

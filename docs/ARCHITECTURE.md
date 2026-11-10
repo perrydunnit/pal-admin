@@ -183,16 +183,30 @@ frontend/src/
 `poll_world()` in `app.py` fetches `/v1/api/game-data` every
 `GAME_DATA_SECONDS` (20 s) while it works, and every `GAME_DATA_RETRY_SECONDS`
 (5 min) while it 404s, so enabling the flag on the game side is picked up
-without restarting this stack. The actor array is reduced to a bounded payload:
+without restarting this stack. The response is
+`{Time, FPS, AverageFPS, InGameTime, InGameDays, ActorData[]}`; `ActorData` is
+reduced to a bounded payload:
 
 - `players[]` — name, level, HP, guild, position, `party[]`
 - `bases[]` — PalBox name, guild, position, `workers[]`
 - `guilds[]` — rolled-up player/base/pal counts
 - `counts` — players, party/base/wild pals, NPCs, bases
+- `days`, `time` — from `InGameDays` / `InGameTime`
 
-Party pals attach through `TrainerInstanceID`; base workers attach the same way
-to the PalBox `InstanceID`. Unknown or future actor fields are ignored rather
-than fatal, and both snake_case and PascalCase are accepted.
+Two quirks of the real payload shape the parser:
+
+- actor ids are compound (`<playerId> : <runtimeActorId>`); the stable half is
+  kept as `id` and the raw value as `runtime_id`. Party pals attach through
+  `TrainerInstanceID`, compared on the stable half.
+- **base workers carry no trainer/base id** — `TrainerInstanceID` is empty. They
+  are attached to the nearest PalBox of the same guild by map position, which is
+  sound because the game keeps workers inside their camp. PalBoxes have no
+  `InstanceID` either, so a base id is synthesised from guild + raw name, and
+  the untranslated `新規生成拠点テンプレート名N(仮)` placeholder becomes
+  "Unnamed base N+1".
+
+Unknown or future actor fields are ignored rather than fatal, and both
+snake_case and PascalCase are accepted.
 
 Positions use the community Palpagos calibration:
 
@@ -200,10 +214,13 @@ Positions use the community Palpagos calibration:
 bounds = (maxX, maxY, minX, minY) = (349400, 724400, -1099400, -724400)
 nx = (y - minY) / (maxY - minY)          # screen X follows world Y
 ny = (maxX - x) / (maxX - minX)          # screen Y follows world X
-map_x = (ny * 8192 - 158000) / 459       # the in-game read-out
-map_y = (nx * 8192 + 123888) / 459
+map_x = (y - 158000) / 459               # the in-game read-out
+map_y = (x + 123888) / 459
 ```
 
+`px`/`py` are the normalised plot position (0–1, origin top-left); `map_x`/
+`map_y` are the numbers a player sees on the in-game map — e.g. exampleplayer at world
+`(-347954, 263915)` plots at `(0.682, 0.481)` and reads `X 231 Y -488`.
 `map_point()` returns `null` for coordinates outside the map (instances, the
 World Tree), and the UI simply omits those markers. The map itself is a
 schematic grid — the Palpagos texture is copyrighted, so it is neither bundled

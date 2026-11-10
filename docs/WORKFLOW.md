@@ -79,7 +79,7 @@ covers them, and `verify.sh` fails if `.env` ever becomes tracked.
 scripts/deploy.sh            # verifies, refuses dirty trees, copies, rebuilds, waits for health
 ```
 
-It copies only the deployable files — `app.py`, `templates/`, `docs/`,
+It copies only the deployable files — `app.py`, `frontend/`, `docs/`,
 `compose.yaml`, `Dockerfile`, `requirements.txt`, `README.md` — into
 `/opt/stacks/paladmin`, never `.env` or `data/`, then rebuilds and polls the
 healthcheck.

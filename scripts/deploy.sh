@@ -13,7 +13,7 @@ set -euo pipefail
 
 REMOTE="${PALADMIN_REMOTE:-paladmin-host}"
 REMOTE_DIR="/opt/stacks/paladmin"
-FILES=(app.py compose.yaml Dockerfile requirements.txt README.md templates docs)
+FILES=(app.py compose.yaml Dockerfile requirements.txt README.md .dockerignore frontend docs)
 
 DRY=0 SKIP_VERIFY=0 ALLOW_DIRTY=0 ROLLBACK=0
 for arg in "$@"; do
@@ -54,7 +54,8 @@ fi
 if [ "$DRY" = 1 ]; then
   echo "would copy to ${REMOTE}:${REMOTE_DIR}"
   for f in "${FILES[@]}"; do
-    if [ -d "$f" ]; then find "$f" -type f -not -path '*/__pycache__/*' | sed 's/^/  /'
+    if [ -d "$f" ]; then find "$f" -type f -not -path '*/__pycache__/*' \
+      -not -path '*/node_modules/*' -not -path '*/dist/*' | sed 's/^/  /'
     else echo "  $f"; fi
   done
   echo "then: docker compose up -d --build"
@@ -83,18 +84,19 @@ remote_stage="${REMOTE_DIR}/.incoming"
 ssh "$REMOTE" "rm -rf '${remote_stage}' && mkdir -p '${remote_stage}'"
 
 # tar over ssh keeps permissions and avoids one round-trip per file
-tar -czf - --exclude='__pycache__' "${FILES[@]}" | ssh "$REMOTE" "tar -xzf - -C '${remote_stage}'"
+tar -czf - --exclude='__pycache__' --exclude='node_modules' --exclude='frontend/dist' \
+  "${FILES[@]}" | ssh "$REMOTE" "tar -xzf - -C '${remote_stage}'"
 
 echo "==> installing"
 ssh "$REMOTE" "set -e
   cd '${remote_stage}'
   # move into place; .env and data/ live only on the server and stay untouched
-  for f in app.py compose.yaml Dockerfile requirements.txt README.md; do
+  for f in app.py compose.yaml Dockerfile requirements.txt README.md .dockerignore; do
     [ -f \"\$f\" ] && cp -f \"\$f\" '${REMOTE_DIR}/'
   done
-  rm -rf '${REMOTE_DIR}/templates' '${REMOTE_DIR}/docs'
-  [ -d templates ] && cp -a templates '${REMOTE_DIR}/'
+  rm -rf '${REMOTE_DIR}/templates' '${REMOTE_DIR}/docs' '${REMOTE_DIR}/frontend'
   [ -d docs ] && cp -a docs '${REMOTE_DIR}/'
+  [ -d frontend ] && cp -a frontend '${REMOTE_DIR}/'
   rm -rf '${remote_stage}'
   cd '${REMOTE_DIR}'
   docker compose up -d --build >/dev/null

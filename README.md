@@ -5,7 +5,9 @@ online when. Built for this deployment, portable to any
 [thijsvanloef/palworld-server-docker](https://github.com/thijsvanloef/palworld-server-docker)
 server with the REST API enabled.
 
-- **Live**: stat cards, who is online now, all-time per-player stats
+- **Live**: stat cards, who is online now, chat, all-time per-player stats
+- **World**: live positions, guilds, bases and their worker pals (when the
+  game's `game-data` endpoint is enabled), with a schematic coordinate map
 - **History**: monthly calendar, and a continuous month timeline with a sticky
   player column where a session crossing midnight is one unbroken bar
 
@@ -19,30 +21,47 @@ docker compose up -d --build
 ```
 
 The game stack must already be running — this reads from it and from its
-container log.
+container log. The UI is a React app compiled in the Docker build; there is no
+node requirement on the host.
 
 ## Data sources
 
 | Source | Used for |
 |---|---|
-| `http://palworld-server:8212` (REST API) | live roster, level, IP, platform, fps, world day, base camps |
-| the game container's log, via `docker.sock` (read-only) | exact join/leave timestamps |
+| `http://palworld-server:8212` (REST API) | live roster, level, IP, platform, ping, position, fps, world day, base camps, server version |
+| the game container's log, via `docker.sock` (read-only) | exact join/leave timestamps, chat |
+| `/v1/api/game-data` (when enabled) | guilds, bases, base workers, party pals, HP, wild-pal counts |
 
-Both are reconciled every `POLL_SECONDS` into SQLite at `./data/paladmin.db`.
+Players, metrics and chat are reconciled continuously; the page is pushed over
+SSE rather than polled.
 
 ## Repository layout
 
 ```
-app.py                 Flask app: collector thread + JSON endpoints
-templates/index.html   the whole UI (no build step, no external deps)
+app.py                 Flask app: collector threads, JSON + SSE endpoints
+frontend/              React UI (Vite): components, styles, unit tests
+frontend/dist/         build output (gitignored; built by Docker)
 compose.yaml           Dockge stack: service, Traefik labels, basic auth
-Dockerfile             python:3.12-slim + gunicorn, single worker
+Dockerfile             node build stage + python:3.12-slim + gunicorn
 requirements.txt       flask, gunicorn, requests, docker
 .env.example           every setting, placeholder values only
 scripts/deploy.sh      publish this checkout to the server
 docs/                  see below
 data/                  SQLite runtime state (gitignored)
 ```
+
+## Working on the UI
+
+```bash
+cd frontend
+npm install
+npm run dev      # Vite dev server, proxies /api to a local Flask on :8000
+npm test         # unit tests for the pure helpers
+npm run build    # production build into dist/
+```
+
+`scripts/verify.sh` runs the tests and the build when `node_modules` exists, so
+the pre-commit hook catches a broken bundle.
 
 ## Documentation
 
@@ -78,6 +97,8 @@ Deploys record `commit`, `subject`, `deployed`, `deployed_by` in
   documented template, and `verify.sh` fails if `.env` ever becomes tracked.
 - **One gunicorn worker.** The collector is a thread started at import; extra
   workers would poll and write concurrently.
+- **The UI is built, not hand-served.** `frontend/` is React + Vite; `dist/` is
+  gitignored and produced by the Docker build. Do not edit `dist/` by hand.
 - **Deploying this does not touch the game.** They are separate stacks; this one
   can be rebuilt freely at any time.
 
@@ -89,8 +110,22 @@ new events are missed while the game container is down. Events already ingested
 are kept in `data/paladmin.db`, so recorded history survives restarts of either
 container.
 
-Player **levels** are only obtainable while a player is online, so the level
-column reads `—` until that player next logs in.
+Player **levels**, pings and coordinates are only obtainable while a player is
+online, so those read `—` until that player next logs in.
+
+### World panel
+
+Guilds, bases, base workers, party pals and HP come from the game's
+`GET /v1/api/game-data` endpoint. That endpoint is **disabled unless the game
+server is started with `-EnableGameDataAPI`** (and some builds also want
+`-enable-gamedata-api`), so the panel shows an explanation and plots the live
+positions from the ordinary player list until it is available. It switches over
+by itself on the next check — no redeploy needed.
+
+The map is a schematic coordinate plot, not the game's map texture: the artwork
+belongs to Pocketpair and is deliberately neither bundled nor hotlinked. The
+projection uses the community calibration (`MAP_BOUNDS` in `app.py`), which is
+also what produces the `X … Y …` read-out shown for players and bases.
 
 ## Timeline
 

@@ -46,9 +46,14 @@ blob/disk comparisons diverge.
 
 ## Deliberate choices
 
-- **No framework, no build step.** `templates/index.html` is plain HTML/CSS/JS so
-  the stack is one container with no Node toolchain. Keep it that way unless
-  there's a strong reason.
+- **React, built at image-build time.** The UI lives in `frontend/` and is
+  compiled in a `node:22-alpine` stage; nothing from node ships at runtime. Keep
+  it plain — no CSS framework, no router, no state library. `scripts/verify.sh`
+  runs the unit tests and the production build, and `npm run dev` proxies `/api`
+  to Flask for UI work.
+- **`frontend/dist/` is generated.** It is gitignored and produced by Docker.
+  Never edit or commit it. The Flask app serves it from `STATIC_DIR`
+  (`/app/static` in the image).
 - **Diffed refreshes.** Panes and calendar cells compare their JSON before
   rebuilding. Re-rendering wholesale causes visible flicker and loses scroll
   position — the original bug report. This is what keeps the push path safe:
@@ -75,14 +80,17 @@ blob/disk comparisons diverge.
   ever confuses anyone.
 - **`trend` is fetched but unused** by the current UI — cheap, but dead until a
   sparkline exists.
-- **No map yet.** `location_x`/`location_y` are collected and served but the UI
-  does not plot them; that needs a world→pixel calibration for the map image.
 - **`game-data` is unavailable** on this server until the game is restarted with
   `-EnableGameDataAPI`. That is the only source of guilds, base camps and pals.
-- **No tests.** Verification so far has been ad-hoc scripted checks (syntax,
-  boundaries, sticky geometry). The pure functions (`split_by_day`,
-  `_clip_session`, `range_payload`, `timeline_payload`) are the obvious first
-  targets — they take plain data and are easy to pin with fixtures.
+- **The world panel has only been tested against fixtures.** The actor field
+  names come from the documented schema plus tolerant aliases; the first real
+  snapshot after enabling the flag is worth eyeballing.
+- **No map artwork.** The Palpagos texture is Pocketpair's; the map is a
+  schematic grid with correctly projected dots and an external link, by choice.
+- **No tests for the backend.** Frontend pure helpers are pinned by vitest;
+  `split_by_day`, `_clip_session`, `range_payload`, `timeline_payload`,
+  `map_point` and `project_world` are still checked by ad-hoc scripts only.
+  They take plain data and are the obvious next targets.
 - **Player rename** creates a second `players` row if the REST API reports a new
   `playerId`; a rename in name only updates in place.
 - **No auth inside the app.** All gating is Traefik basic auth. Running the
@@ -96,12 +104,13 @@ blob/disk comparisons diverge.
 # compile check (no runtime needed)
 python -m py_compile app.py
 
-# JS syntax check — extract the script block first
-python -c "import re;h=open('templates/index.html',encoding='utf-8').read();open('/tmp/c.js','w').write(re.search(r'<script>(.*)</script>',h,re.S).group(1))"
-node --check /tmp/c.js
+# frontend: unit tests, production build, live-reload dev server
+cd frontend && npm test && npm run build
+cd frontend && npm run dev        # proxies /api to http://127.0.0.1:8000
 
-# exercise the endpoints against a copy of the DB
-docker run --rm -v "$PWD":/app -w /app -e DB_PATH=/tmp/t.db -p 8000:8000 \
-  -v /var/run/docker.sock:/var/run/docker.sock:ro python:3.12-slim \
-  sh -c "pip install -q -r requirements.txt && python app.py"
+# exercise the API against a copy of the DB
+DB_PATH=/tmp/t.db python app.py
+
+# everything the gate runs
+scripts/verify.sh
 ```

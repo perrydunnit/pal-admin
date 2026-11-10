@@ -9,10 +9,13 @@ Two loops, a push fan-out and a schema, all in `app.py`:
   docker.sock ──▶│ follow_logs()   streaming          │──┐ join/leave ─▶ wake
   (read-only)    │  join/leave/chat lines → tables    │  │ chat ───────▶ publish()
                  └────────────────────────────────────┘  │
-                                                         ├──▶ SQLite ──▶ endpoints ──▶ index.html
+                                                         ├──▶ SQLite ──▶ endpoints ──▶ React app
                  ┌────────────────────────────────────┐  │                  │
   REST API    ──▶│ poll_api()  heartbeat + on wake    │──┘                  ▼
   :8212          │  roster/metrics/info → tables      │            /api/events (SSE)
+                 ├────────────────────────────────────┤
+                 │ poll_world()  every 20 s           │──▶ world snapshot (memory)
+                 │  /v1/api/game-data → projection    │
                  └────────────────────────────────────┘
 ```
 
@@ -149,26 +152,70 @@ reads the last 240 for the trend sparkline.
 
 ## UI notes
 
-`templates/index.html` is self-contained — no build, no dependencies, no CDN.
+`frontend/` is a React app (Vite, no router, no UI library) compiled to static
+files by the Docker build and served from `/static`. The only runtime HTTP it
+knows about is `/api/*`.
 
-- One continuous timeline per month: a row per player, `position: sticky` left
-  column for the date + names, day boundaries as vertical rules labelled with the
-  date that starts there. No `scroll-snap`: scrolling is free-form and the sticky
-  date follows whichever day is at the left edge.
-- Sessions crossing midnight are single bars because bars are positioned against
-  the month axis, not clipped per day.
-- Refreshes are pushed, not polled: the page holds one `EventSource` on
-  `/api/events`, applies each frame exactly like a fetch, and refetches the
-  timeline at most once per burst. Panes/cells are rebuilt only when their JSON
-  changes, so selection, scroll position and hover survive an update. If the
-  stream drops, a 30 s fetch takes over until it reconnects.
-- Ongoing sessions render with a gradient fade, a pulse animation and a dot at the
-  leading edge, plus a green "now" line on today's row.
-- The chat panel is fed by the same push frames and keeps its own digest, so it
-  only re-renders when a message arrives.
+```
+frontend/src/
+  App.jsx            state owner: month being viewed, selection, zoom
+  api.js             useLiveSummary() — one EventSource, 30 s fetch fallback
+  timeline.js        pure geometry (unit-tested)
+  world.js           guild colours, health, marker projection (unit-tested)
+  components/        Header, Cards, WorldPanel, MapPlot, LivePlayers, ChatPanel,
+                     PlayerStats, Calendar, Timeline
+```
+
+- The page is pushed, not polled: one `EventSource` on `/api/events`. Each frame
+  is a full `/api/summary`, so components render from the same shape as on first
+  load, and React's reconciliation is what keeps scroll position and selection
+  stable. A pushed frame for a month the user is not looking at updates the live
+  panes only; the calendar keeps showing the month being browsed.
+- The timeline is still one continuous axis per month, with a `position: sticky`
+  left column inside a `width: max-content` inner wrapper, fractions for
+  positions and bars that are never clipped per day. Scroll drives the selected
+  day; the sticky date follows whichever day is at the left edge.
+- The timeline's scroll container is mounted from the first render (an empty
+  panel until the first fetch lands) so the `ResizeObserver` can measure it.
+
+## World data and the map
+
+`poll_world()` in `app.py` fetches `/v1/api/game-data` every
+`GAME_DATA_SECONDS` (20 s) while it works, and every `GAME_DATA_RETRY_SECONDS`
+(5 min) while it 404s, so enabling the flag on the game side is picked up
+without restarting this stack. The actor array is reduced to a bounded payload:
+
+- `players[]` — name, level, HP, guild, position, `party[]`
+- `bases[]` — PalBox name, guild, position, `workers[]`
+- `guilds[]` — rolled-up player/base/pal counts
+- `counts` — players, party/base/wild pals, NPCs, bases
+
+Party pals attach through `TrainerInstanceID`; base workers attach the same way
+to the PalBox `InstanceID`. Unknown or future actor fields are ignored rather
+than fatal, and both snake_case and PascalCase are accepted.
+
+Positions use the community Palpagos calibration:
+
+```
+bounds = (maxX, maxY, minX, minY) = (349400, 724400, -1099400, -724400)
+nx = (y - minY) / (maxY - minY)          # screen X follows world Y
+ny = (maxX - x) / (maxX - minX)          # screen Y follows world X
+map_x = (ny * 8192 - 158000) / 459       # the in-game read-out
+map_y = (nx * 8192 + 123888) / 459
+```
+
+`map_point()` returns `null` for coordinates outside the map (instances, the
+World Tree), and the UI simply omits those markers. The map itself is a
+schematic grid — the Palpagos texture is copyrighted, so it is neither bundled
+nor hotlinked; an external interactive map is linked instead.
 
 ## Dependencies
 
 `requirements.txt`: `flask`, `gunicorn`, `requests`, `docker`. Runtime image is
 `python:3.12-slim`. The `docker` Python package needs nothing from the host but
 the socket, which is mounted read-only.
+
+The frontend adds a **build-time only** toolchain: `react`, `react-dom`, `vite`,
+`@vitejs/plugin-react`, `vitest` (see `frontend/package.json`, locked by
+`package-lock.json`). Nothing from node ships in the runtime image — the Docker
+build compiles `frontend/` in a `node:22-alpine` stage and copies `dist/`.

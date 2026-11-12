@@ -45,8 +45,8 @@ the first time someone plays it.
 
 - stored in `data/music` (the same volume as `paladmin.db`), named by content
   hash, so re-uploading is a no-op and backups cover it;
-- types checked by magic bytes, not just the extension; 64 MB per file by
-  default (`MUSIC_MAX_BYTES`);
+- types checked by magic bytes, not just the extension; 256 MB per file by
+  default (`MUSIC_MAX_BYTES`), streamed to disk so the cap costs no memory;
 - `GET /api/music?format=tsv` is the mod's view — tab separated, because UE4SS
   has no JSON parser.
 

@@ -94,5 +94,31 @@ class ValidateTests(unittest.TestCase):
         self.assertIn("larger than", str(ctx.exception))
 
 
+class HeaderTests(unittest.TestCase):
+    """The streaming path: only the first bytes and the size are available."""
+
+    def test_validates_without_the_body(self):
+        meta = musiclib.validate_header("Song.mid", b"MThd\x00\x00\x00\x06", 12, 10 * MB)
+        self.assertEqual(meta["kind"], "midi")
+        self.assertEqual(meta["name"], "Song")
+        self.assertEqual(meta["bytes"], 12)
+        self.assertNotIn("id", meta, "the id comes from the hash, which streams")
+
+    def test_enforces_the_limit_while_streaming(self):
+        with self.assertRaises(ValueError) as ctx:
+            musiclib.validate_header("big.flac", b"fLaC", 2048, 1024)
+        self.assertIn("larger than", str(ctx.exception))
+
+    def test_limit_message_scales(self):
+        self.assertIn("256 MB", musiclib.limit_error(256 * MB))
+        self.assertIn("64 MB", musiclib.limit_error(64 * MB))
+        self.assertIn("4 KB", musiclib.limit_error(4096))
+
+    def test_rejects_an_empty_body(self):
+        with self.assertRaises(ValueError) as ctx:
+            musiclib.validate_header("empty.mp3", b"", 0, MB)
+        self.assertIn("empty", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()

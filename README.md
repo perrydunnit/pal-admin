@@ -46,6 +46,7 @@ Dockerfile             node build stage + python:3.12-slim + gunicorn
 requirements.txt       flask, gunicorn, requests, docker
 .env.example           every setting, placeholder values only
 scripts/deploy.sh      publish this checkout to the server
+mods/PalPiano/         UE4SS client mod: play music on in-game pianos
 docs/                  see below
 data/                  SQLite runtime state (gitignored)
 ```

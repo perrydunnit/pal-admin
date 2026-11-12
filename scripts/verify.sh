@@ -32,6 +32,32 @@ else
   else
     bad "app.py does not compile: $(tail -3 "$tmp/err")"
   fi
+
+  # A local module imported by app.py must also be shipped: the Dockerfile has
+  # to COPY it and deploy.sh has to transfer it. Missing this took the site down
+  # once (musiclib.py), and py_compile alone cannot see it.
+  if "$PY" - >"$tmp/ship" 2>&1 <<'PY'
+import ast, pathlib, sys
+
+local = {
+    alias.name
+    for node in ast.walk(ast.parse(pathlib.Path("app.py").read_text(encoding="utf-8")))
+    if isinstance(node, ast.Import)
+    for alias in node.names
+    if pathlib.Path(alias.name + ".py").exists()
+}
+dockerfile = pathlib.Path("Dockerfile").read_text(encoding="utf-8")
+deploy = pathlib.Path("scripts/deploy.sh").read_text(encoding="utf-8")
+problems = [f"{m}.py" for m in sorted(local) if m not in dockerfile or m not in deploy]
+for p in problems:
+    print(f"not shipped: {p} (Dockerfile COPY and scripts/deploy.sh FILES)")
+sys.exit(1 if problems else 0)
+PY
+  then
+    pass "local modules are shipped by Dockerfile and deploy"
+  else
+    bad "$(tr '\n' ' ' <"$tmp/ship")"
+  fi
   rm -rf "$tmp"
 fi
 

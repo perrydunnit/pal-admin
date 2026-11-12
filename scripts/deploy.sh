@@ -106,8 +106,12 @@ echo "==> waiting for health"
 for _ in $(seq 1 30); do
   status=$(ssh "$REMOTE" "docker inspect --format '{{.State.Health.Status}}' paladmin 2>/dev/null || echo missing")
   if [ "$status" = "healthy" ]; then
-    ssh "$REMOTE" "printf 'commit=%s\nsubject=%s\ndeployed=%s\ndeployed_by=%s\n' \
-      '${commit}' '${subject}' \"\$(date -Is)\" '$(whoami)' > '${REMOTE_DIR}/DEPLOYED'"
+    {
+      printf 'commit=%s\n' "$commit"
+      printf 'subject=%s\n' "$subject"
+      printf 'deployed=%s\n' "$(date -Is)"
+      printf 'deployed_by=%s\n' "$(whoami)"
+    } | ssh "$REMOTE" "cat > '${REMOTE_DIR}/DEPLOYED'"
     echo "==> deployed ${commit:0:7}${dirty} — https://pal-admin.example.com"
     exit 0
   fi

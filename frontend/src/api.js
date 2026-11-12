@@ -69,3 +69,22 @@ export async function fetchJSON(url) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
+
+export async function listMusic() {
+  return fetchJSON('/api/music')
+}
+
+export async function uploadMusic(file) {
+  const body = new FormData()
+  body.append('file', file)
+  const res = await fetch('/api/music', { method: 'POST', body })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  return data
+}
+
+export async function deleteMusic(id) {
+  const res = await fetch(`/api/music/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  return res.json()
+}

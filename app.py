@@ -9,10 +9,12 @@ Serves a single-page dashboard with player stats and a presence calendar.
 
 import calendar as calmod
 import datetime as dt
+import hashlib
 import json
 import os
 import re
 import sqlite3
+import tempfile
 import threading
 import time
 from zoneinfo import ZoneInfo
@@ -32,7 +34,11 @@ DB_PATH = os.environ.get("DB_PATH", "/data/paladmin.db")
 # Uploaded music lives beside the database so it is covered by the same volume
 # and the same backups. Never inside the repo.
 MUSIC_DIR = os.environ.get("MUSIC_DIR", os.path.join(os.path.dirname(DB_PATH) or ".", "music"))
-MUSIC_MAX_BYTES = int(os.environ.get("MUSIC_MAX_BYTES", str(64 * 1024 * 1024)))
+# Uploads stream to disk one 256 KB chunk at a time, so this cap is a policy
+# choice (and a disk-space guard), not a memory one. The real ceilings are free
+# space in /data and gunicorn's --timeout (a 256 MB upload needs ~3 minutes above
+# 10 Mbit/s).
+MUSIC_MAX_BYTES = int(os.environ.get("MUSIC_MAX_BYTES", str(256 * 1024 * 1024)))
 STATIC_DIR = os.environ.get(
     "STATIC_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
@@ -1214,43 +1220,88 @@ def api_music_upload():
     if upload is None or not upload.filename:
         return jsonify(error="attach a file in the 'file' field"), 400
 
-    data = upload.read(MUSIC_MAX_BYTES + 1)
-    try:
-        meta = musiclib.validate(upload.filename, data, MUSIC_MAX_BYTES)
-    except ValueError as exc:
-        return jsonify(error=str(exc)), 400
-
-    stored = meta["id"] + meta["ext"]
-    path = os.path.join(MUSIC_DIR, stored)
     os.makedirs(MUSIC_DIR, exist_ok=True)
+    head = b""
+    digest = hashlib.sha256()
+    total = 0
+    tmp_path = None
 
-    with db() as conn:
-        existing = conn.execute(
-            "SELECT id, name, ext, kind, bytes, uploaded, source FROM music WHERE id = ?",
-            (meta["id"],),
-        ).fetchone()
-        if existing:
-            return jsonify(track=_track_json(existing), duplicate=True), 200
+    try:
+        # Stream to a temp file beside the library: memory stays at one chunk
+        # regardless of the limit, and the bytes are hashed as they arrive.
+        with tempfile.NamedTemporaryFile(delete=False, dir=MUSIC_DIR, prefix=".upload-") as tmp:
+            tmp_path = tmp.name
+            while True:
+                chunk = upload.stream.read(256 * 1024)
+                if not chunk:
+                    break
+                if not head:
+                    head = chunk[:8192]
+                total += len(chunk)
+                if total > MUSIC_MAX_BYTES:
+                    raise ValueError(musiclib.limit_error(MUSIC_MAX_BYTES))
+                digest.update(chunk)
+                tmp.write(chunk)
 
-        # Write the bytes before the row, so a row never points at a missing file.
-        tmp = path + ".part"
-        with open(tmp, "wb") as handle:
-            handle.write(data)
-        os.replace(tmp, path)
+        meta = musiclib.validate_header(upload.filename, head, total, MUSIC_MAX_BYTES)
+    except ValueError as exc:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except FileNotFoundError:
+                pass
+        return jsonify(error=str(exc)), 400
+    except Exception:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except FileNotFoundError:
+                pass
+        raise
 
-        conn.execute(
-            "INSERT INTO music(id, name, ext, kind, bytes, sha256, uploaded, source)"
-            " VALUES(?,?,?,?,?,?,?,?)",
-            (meta["id"], meta["name"], meta["ext"], meta["kind"], meta["bytes"],
-             meta["sha256"], iso(now_utc()), (upload.filename or "")[:120]),
-        )
-        created = conn.execute(
-            "SELECT id, name, ext, kind, bytes, uploaded, source FROM music WHERE id = ?",
-            (meta["id"],),
-        ).fetchone()
+    meta["sha256"] = digest.hexdigest()
+    meta["id"] = musiclib.identifier(meta["sha256"])
+    stored = meta["id"] + meta["ext"]
+
+    try:
+        with db() as conn:
+            existing = conn.execute(
+                "SELECT id, name, ext, kind, bytes, uploaded, source FROM music WHERE id = ?",
+                (meta["id"],),
+            ).fetchone()
+            if existing:
+                return jsonify(track=_track_json(existing), duplicate=True), 200
+
+            # Move into place before the row exists, so a row never points at a
+            # missing file. A duplicate upload that lost the race is harmless:
+            # both wrote identical bytes.
+            os.replace(tmp_path, os.path.join(MUSIC_DIR, stored))
+            tmp_path = None
+
+            conn.execute(
+                "INSERT INTO music(id, name, ext, kind, bytes, sha256, uploaded, source)"
+                " VALUES(?,?,?,?,?,?,?,?)",
+                (meta["id"], meta["name"], meta["ext"], meta["kind"], meta["bytes"],
+                 meta["sha256"], iso(now_utc()), (upload.filename or "")[:120]),
+            )
+            created = conn.execute(
+                "SELECT id, name, ext, kind, bytes, uploaded, source FROM music WHERE id = ?",
+                (meta["id"],),
+            ).fetchone()
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except FileNotFoundError:
+                pass
 
     publish()
     return jsonify(track=_track_json(created), duplicate=False), 201
+
+
+@app.errorhandler(413)
+def api_too_large(_error):
+    return jsonify(error=musiclib.limit_error(MUSIC_MAX_BYTES)), 413
 
 
 @app.route("/api/music/<music_id>", methods=["DELETE"])

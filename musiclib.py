@@ -94,29 +94,41 @@ def sniff(ext: str, head: bytes) -> bool:
     return False
 
 
-def validate(filename: str, data: bytes, max_bytes: int) -> dict:
-    """Checks an upload. Returns {ext, name, kind, bytes, sha256, id}.
+def limit_error(max_bytes: int) -> str:
+    if max_bytes >= 1024 * 1024:
+        shown = f"{max_bytes // (1024 * 1024)} MB"
+    else:
+        shown = f"{max(1, max_bytes // 1024)} KB"
+    return f"file is larger than the {shown} limit"
 
-    Raises ValueError with a message safe to show the user.
+
+def validate_header(filename: str, head: bytes, size: int, max_bytes: int) -> dict:
+    """Checks an upload using only its first bytes and its size.
+
+    This is the streaming variant: the caller has already written the body to
+    disk and hashed it, so nothing here needs the whole file in memory.
+    Returns {ext, name, kind, bytes}.
     """
     if not filename:
         raise ValueError("a file name is required")
     ext = extension(filename)
     if ext not in EXTENSIONS:
         raise ValueError(f"unsupported type {ext or '(none)'}; allowed: {ACCEPT}")
-    if not data:
+    if not size:
         raise ValueError("the file is empty")
-    if len(data) > max_bytes:
-        raise ValueError(f"file is larger than the {max_bytes // (1024 * 1024)} MB limit")
-    if not sniff(ext, data[:8192]):
+    if size > max_bytes:
+        raise ValueError(limit_error(max_bytes))
+    if not sniff(ext, head or b""):
         raise ValueError(f"content does not look like a {ext} file")
 
+    return {"ext": ext, "name": display_name(filename), "kind": EXTENSIONS[ext], "bytes": size}
+
+
+def validate(filename: str, data: bytes, max_bytes: int) -> dict:
+    """Checks a complete upload in memory. Returns the stored shape."""
+    data = data or b""
+    meta = validate_header(filename, data[:8192], len(data), max_bytes)
     digest = sha256(data)
-    return {
-        "ext": ext,
-        "name": display_name(filename),
-        "kind": EXTENSIONS[ext],
-        "bytes": len(data),
-        "sha256": digest,
-        "id": identifier(digest),
-    }
+    meta["sha256"] = digest
+    meta["id"] = identifier(digest)
+    return meta

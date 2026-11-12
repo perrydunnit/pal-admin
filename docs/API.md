@@ -249,7 +249,13 @@ in-game mod), one track per line, tab separated, after a
 ### POST /api/music
 
 `multipart/form-data` with a `file` field. Accepts `.mid .midi .wav .mp3 .flac
-.ogg .oga .opus .m4a .aac .wma`, up to `MUSIC_MAX_BYTES` (default 64 MB).
+.ogg .oga .opus .m4a .aac .wma`, up to `MUSIC_MAX_BYTES` (default 256 MB).
+
+The body is streamed to a temp file beside the library and hashed in 256 KB
+chunks, so memory per upload is constant no matter how large the limit is. The
+practical ceilings are free space in `/data` and gunicorn's `--timeout` (the
+container uses 120 s; a 256 MB upload needs ~3 minutes above 10 Mbit/s, so raise
+`--timeout` before raising the cap much further).
 
 - `201` with `{"track": {…}, "duplicate": false}` when stored.
 - `200` with `"duplicate": true` when the same bytes are already present.

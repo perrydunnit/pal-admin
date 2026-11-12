@@ -27,5 +27,9 @@ COPY --from=ui /ui/dist ./static
 EXPOSE 8000
 
 # Single worker: the background collector thread must not run once per worker.
-CMD ["gunicorn", "--workers", "1", "--threads", "8", "--timeout", "120", \
-     "--bind", "0.0.0.0:8000", "app:app"]
+# GUNICORN_TIMEOUT is quoted shell-style because it is read at start-up: a large
+# audio upload counts against this timeout, so raising MUSIC_MAX_BYTES much past
+# ~150 MB on a slow link needs a bigger value here too. exec keeps gunicorn as
+# the process that receives SIGTERM from `docker stop`.
+ENV GUNICORN_TIMEOUT=120
+CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 8 --timeout \"${GUNICORN_TIMEOUT}\" --bind 0.0.0.0:8000 app:app"]

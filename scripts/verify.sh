@@ -35,7 +35,22 @@ else
   rm -rf "$tmp"
 fi
 
-# ---------------------------------------------------------------- 2. frontend
+# ---------------------------------------------------------------- 2. python tests
+if [ -z "$PY" ]; then
+  skip "python tests (python not found)"
+elif [ ! -d tests ]; then
+  skip "python tests (no tests/ directory)"
+else
+  tmp=$(mktemp -d)
+  if "$PY" -m unittest discover -s tests -p 'test_*.py' >"$tmp/out" 2>&1; then
+    pass "python unit tests ($(grep -oE 'Ran [0-9]+ tests?' "$tmp/out" | head -1))"
+  else
+    bad "python unit tests: $(tail -5 "$tmp/out" | tr '\n' ' ')"
+  fi
+  rm -rf "$tmp"
+fi
+
+# ---------------------------------------------------------------- 3. frontend
 NPM=$(command -v npm || true)
 if [ -z "$NODE" ] || [ -z "$NPM" ]; then
   skip "frontend (node/npm not installed)"

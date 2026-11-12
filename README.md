@@ -10,6 +10,8 @@ server with the REST API enabled.
   game's `game-data` endpoint is enabled), with a schematic coordinate map
 - **History**: monthly calendar, and a continuous month timeline with a sticky
   player column where a session crossing midnight is one unbroken bar
+- **Music**: upload audio for the PalPiano mod; it is stored under `data/music`
+  and served to the game client, so players stop passing files around
 
 Served at **https://pal-admin.example.com** behind HTTP basic auth.
 
@@ -35,10 +37,27 @@ node requirement on the host.
 Players, metrics and chat are reconciled continuously; the page is pushed over
 SSE rather than polled.
 
+## Music library
+
+The dashboard stores audio for the piano mod: upload on the **Music library**
+panel, and the mod's picker lists it alongside local files, downloading a track
+the first time someone plays it.
+
+- stored in `data/music` (the same volume as `paladmin.db`), named by content
+  hash, so re-uploading is a no-op and backups cover it;
+- types checked by magic bytes, not just the extension; 64 MB per file by
+  default (`MUSIC_MAX_BYTES`);
+- `GET /api/music?format=tsv` is the mod's view — tab separated, because UE4SS
+  has no JSON parser.
+
+See [docs/API.md](docs/API.md#music-library) for the endpoints.
+
 ## Repository layout
 
 ```
 app.py                 Flask app: collector threads, JSON + SSE endpoints
+musiclib.py            audio upload rules (pure, unit tested)
+tests/                 stdlib unittest for the pure backend helpers
 frontend/              React UI (Vite): components, styles, unit tests
 frontend/dist/         build output (gitignored; built by Docker)
 compose.yaml           Dockge stack: service, Traefik labels, basic auth
@@ -46,7 +65,7 @@ Dockerfile             node build stage + python:3.12-slim + gunicorn
 requirements.txt       flask, gunicorn, requests, docker
 .env.example           every setting, placeholder values only
 scripts/deploy.sh      publish this checkout to the server
-mods/PalPiano/         UE4SS client mod: play music on in-game pianos
+mods/PalPiano/         UE4SS mod: play music on in-game pianos
 docs/                  see below
 data/                  SQLite runtime state (gitignored)
 ```

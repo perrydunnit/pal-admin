@@ -19,7 +19,9 @@ from zoneinfo import ZoneInfo
 
 import docker
 import requests
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
+
+import musiclib
 
 TZ = ZoneInfo(os.environ.get("TZ", "UTC"))
 PAL_API = os.environ.get("PAL_API", "http://palworld-server:8212").rstrip("/")
@@ -27,6 +29,10 @@ ADMIN_USER = os.environ.get("ADMIN_USER", "admin")
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 PAL_CONTAINER = os.environ.get("PAL_CONTAINER", "palworld-server")
 DB_PATH = os.environ.get("DB_PATH", "/data/paladmin.db")
+# Uploaded music lives beside the database so it is covered by the same volume
+# and the same backups. Never inside the repo.
+MUSIC_DIR = os.environ.get("MUSIC_DIR", os.path.join(os.path.dirname(DB_PATH) or ".", "music"))
+MUSIC_MAX_BYTES = int(os.environ.get("MUSIC_MAX_BYTES", str(64 * 1024 * 1024)))
 STATIC_DIR = os.environ.get(
     "STATIC_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
@@ -46,6 +52,9 @@ MAP_GAME_Y_OFFSET = 123888.0
 MAP_GAME_SCALE = 459.0
 
 app = Flask(__name__, static_folder=STATIC_DIR, static_url_path="/static")
+# Uploads are the only request bodies this app sees; anything larger is rejected
+# before it is buffered into memory.
+app.config["MAX_CONTENT_LENGTH"] = MUSIC_MAX_BYTES + (1024 * 1024)
 _db_lock = threading.Lock()
 
 # Bumped whenever stored state changes; SSE subscribers wait on it instead of
@@ -131,6 +140,17 @@ CREATE TABLE IF NOT EXISTS server (
     key         TEXT PRIMARY KEY,
     value       TEXT
 );
+
+CREATE TABLE IF NOT EXISTS music (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    ext         TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    bytes       INTEGER NOT NULL,
+    sha256      TEXT NOT NULL,
+    uploaded    TEXT NOT NULL,
+    source      TEXT
+);
 """
 
 # Added after the first release; created above for fresh databases, patched in
@@ -159,6 +179,7 @@ def db():
 
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
+    os.makedirs(MUSIC_DIR, exist_ok=True)
     with db() as conn:
         conn.executescript(SCHEMA)
         _add_missing_columns(conn)
@@ -826,6 +847,27 @@ def split_by_day(row, lo, hi):
         cursor = chunk_end
 
 
+def music_totals(conn):
+    row = conn.execute(
+        "SELECT COUNT(*) AS count, COALESCE(SUM(bytes), 0) AS bytes FROM music"
+    ).fetchone()
+    return {"count": row["count"], "bytes": row["bytes"], "limit_bytes": MUSIC_MAX_BYTES}
+
+
+def _track_json(row):
+    data = dict(row)
+    return {
+        "id": data["id"],
+        "name": data["name"],
+        "ext": data["ext"],
+        "kind": data["kind"],
+        "bytes": data["bytes"],
+        "uploaded": data.get("uploaded"),
+        "source": data.get("source"),
+        "url": f"/api/music/{data['id']}/file",
+    }
+
+
 def summary_payload(month=None):
     now = now_utc()
     with _world_lock:
@@ -924,6 +966,7 @@ def summary_payload(month=None):
         "server": server or None,
         "chat": [dict(r) for r in reversed(chat)],
         "world": world_snapshot,
+        "music": music_totals(conn),
         "now": iso(now),
     }
 
@@ -1129,6 +1172,129 @@ def api_range():
         return jsonify(range_payload(start, end))
     except ValueError as exc:
         return jsonify(error=str(exc)), 400
+
+
+@app.route("/api/music", methods=["GET"])
+def api_music_list():
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, name, ext, kind, bytes, sha256, uploaded, source"
+            " FROM music ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        totals = music_totals(conn)
+
+    if request.args.get("format") == "tsv":
+        # The in-game mod has no JSON parser, and this is trivially parseable.
+        lines = ["#id\tkind\text\tbytes\tname"]
+        for row in rows:
+            lines.append(
+                f"{row['id']}\t{row['kind']}\t{row['ext']}\t{row['bytes']}\t{row['name']}"
+            )
+        return app.response_class("\n".join(lines) + "\n", mimetype="text/tab-separated-values")
+
+    tracks = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "ext": row["ext"],
+            "kind": row["kind"],
+            "bytes": row["bytes"],
+            "uploaded": row["uploaded"],
+            "source": row["source"],
+            "url": f"/api/music/{row['id']}/file",
+        }
+        for row in rows
+    ]
+    return jsonify(tracks=tracks, **totals)
+
+
+@app.route("/api/music", methods=["POST"])
+def api_music_upload():
+    upload = request.files.get("file")
+    if upload is None or not upload.filename:
+        return jsonify(error="attach a file in the 'file' field"), 400
+
+    data = upload.read(MUSIC_MAX_BYTES + 1)
+    try:
+        meta = musiclib.validate(upload.filename, data, MUSIC_MAX_BYTES)
+    except ValueError as exc:
+        return jsonify(error=str(exc)), 400
+
+    stored = meta["id"] + meta["ext"]
+    path = os.path.join(MUSIC_DIR, stored)
+    os.makedirs(MUSIC_DIR, exist_ok=True)
+
+    with db() as conn:
+        existing = conn.execute(
+            "SELECT id, name, ext, kind, bytes, uploaded, source FROM music WHERE id = ?",
+            (meta["id"],),
+        ).fetchone()
+        if existing:
+            return jsonify(track=_track_json(existing), duplicate=True), 200
+
+        # Write the bytes before the row, so a row never points at a missing file.
+        tmp = path + ".part"
+        with open(tmp, "wb") as handle:
+            handle.write(data)
+        os.replace(tmp, path)
+
+        conn.execute(
+            "INSERT INTO music(id, name, ext, kind, bytes, sha256, uploaded, source)"
+            " VALUES(?,?,?,?,?,?,?,?)",
+            (meta["id"], meta["name"], meta["ext"], meta["kind"], meta["bytes"],
+             meta["sha256"], iso(now_utc()), (upload.filename or "")[:120]),
+        )
+        created = conn.execute(
+            "SELECT id, name, ext, kind, bytes, uploaded, source FROM music WHERE id = ?",
+            (meta["id"],),
+        ).fetchone()
+
+    publish()
+    return jsonify(track=_track_json(created), duplicate=False), 201
+
+
+@app.route("/api/music/<music_id>", methods=["DELETE"])
+def api_music_delete(music_id):
+    with db() as conn:
+        row = conn.execute("SELECT id, ext FROM music WHERE id = ?", (music_id,)).fetchone()
+        if not row:
+            return jsonify(error="unknown track"), 404
+        conn.execute("DELETE FROM music WHERE id = ?", (row["id"],))
+    try:
+        os.remove(os.path.join(MUSIC_DIR, row["id"] + row["ext"]))
+    except FileNotFoundError:
+        pass
+    publish()
+    return jsonify(deleted=row["id"])
+
+
+@app.route("/api/music/<music_id>/file")
+def api_music_file(music_id):
+    with db() as conn:
+        row = conn.execute(
+            "SELECT id, name, ext FROM music WHERE id = ?", (music_id,)
+        ).fetchone()
+    if not row:
+        return jsonify(error="unknown track"), 404
+
+    path = os.path.join(MUSIC_DIR, row["id"] + row["ext"])
+    if not os.path.exists(path):
+        return jsonify(error="file missing on disk"), 410
+    mime = {
+        ".mid": "audio/midi",
+        ".midi": "audio/midi",
+        ".wav": "audio/wav",
+        ".mp3": "audio/mpeg",
+        ".flac": "audio/flac",
+        ".ogg": "audio/ogg",
+        ".oga": "audio/ogg",
+        ".opus": "audio/ogg",
+        ".m4a": "audio/mp4",
+        ".aac": "audio/aac",
+        ".wma": "audio/x-ms-wma",
+    }.get(row["ext"], "application/octet-stream")
+    return send_file(path, mimetype=mime, as_attachment=True,
+                     download_name=row["name"] + row["ext"])
 
 
 @app.route("/")

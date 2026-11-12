@@ -253,9 +253,9 @@ in-game mod), one track per line, tab separated, after a
 
 The body is streamed to a temp file beside the library and hashed in 256 KB
 chunks, so memory per upload is constant no matter how large the limit is. The
-practical ceilings are free space in `/data` and gunicorn's `--timeout` (the
-container uses 120 s; a 256 MB upload needs ~3 minutes above 10 Mbit/s, so raise
-`--timeout` before raising the cap much further).
+practical ceilings are free space in `/data` and gunicorn's request timeout —
+raise `GUNICORN_TIMEOUT` (default 120 s) alongside `MUSIC_MAX_BYTES`, because a
+slow upload counts against it: 256 MB needs ~3.5 minutes above 10 Mbit/s.
 
 - `201` with `{"track": {…}, "duplicate": false}` when stored.
 - `200` with `"duplicate": true` when the same bytes are already present.

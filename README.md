@@ -47,6 +47,7 @@ the first time someone plays it.
   hash, so re-uploading is a no-op and backups cover it;
 - types checked by magic bytes, not just the extension; 256 MB per file by
   default (`MUSIC_MAX_BYTES`), streamed to disk so the cap costs no memory;
+  raise `GUNICORN_TIMEOUT` with it for slow upload links;
 - `GET /api/music?format=tsv` is the mod's view — tab separated, because UE4SS
   has no JSON parser.
 

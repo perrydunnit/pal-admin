@@ -16,13 +16,20 @@ prior conversation.
 | Network | external `media_default` (shared with Traefik and the game) |
 | URL | `https://pal-admin.example.com` |
 | Runtime data | `/opt/stacks/paladmin/data/paladmin.db` (+ `-wal`, `-shm`) |
+| Game settings | `/opt/stacks/palworld/palworld/Pal/Saved/Config/LinuxServer` → `/palconfig` (read-write) |
 
 The container listens on **8000** and is never published to the host — Traefik
 reaches it over `media_default`.
 
 `sudo` on the host requires a password, so everything here runs through the
 `docker` group instead. The stack directory is owned by `admin` and can be
-edited directly; the container runs as root and writes `data/`.
+edited directly; the container runs as root and writes `data/` and the game's
+settings directory.
+
+The one game path in the mount list is deliberate: the config panel needs the
+settings directory, and nothing else from `/opt/stacks/palworld` is visible to
+this container. `PAL_SETTINGS_DIR` in `.env` overrides it if the game stack ever
+moves.
 
 ## DNS, TLS and the proxy
 

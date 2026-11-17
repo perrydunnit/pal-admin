@@ -66,10 +66,31 @@ blob/disk comparisons diverge.
   the sticky element has no travel room and scrolls away.
 - **No per-day clipping in `/api/timeline`.** That is what makes a midnight
   crossing one bar; `/api/day` keeps the clipped view for other consumers.
+- **Restarts are announced, never forced through Docker.** The panel calls
+  `POST /v1/api/shutdown`, the game saves and exits, and `restart: unless-stopped`
+  brings the container back. `docker restart` is still forbidden: it can SIGKILL
+  mid-save.
+- **The LAN gate trusts the last `X-Forwarded-For` hop.** Traefik appends the
+  peer it sees, so a forged header cannot move the caller into the LAN. The
+  socket address is used directly when it is already local. Check
+  `tests/test_server_config.py` before changing the order.
+- **Queued restarts are persisted in `app_state`, not memory.** A dashboard
+  redeploy must not silently drop the request, and the collector is the only
+  thing that fires it, so the queue survives as long as the database does.
 - **`docker.sock` mounted read-only.** Needed to read logs. It also means the
   container can read other containers' environment, which is acceptable only
   because the app is behind basic auth on a single-user host. Do not add write
-  scopes.
+  scopes: restarts go through the game's own REST `shutdown`, not the Docker API.
+- **One host directory is mounted read-write:** the game's settings directory, at
+  `/palconfig`. It is the only file the dashboard writes outside `data/`, and it
+  writes atomically (temp + rename) with a `.bak` of the previous version.
+- **The game image rewrites `PalWorldSettings.ini` at every boot** unless
+  `DISABLE_GENERATE_SETTINGS=true` is in the game stack's environment. The panel
+  detects the missing flag through the Docker socket and shows a banner; if that
+  banner ever appears, saved settings are on borrowed time.
+- **`OptionSettings` is one line with no escape syntax.** A double quote or a
+  newline in a free-text value corrupts every key after it, so validation
+  rejects both before anything is written. Commas are fine inside the quotes.
 
 ## Known gaps
 
@@ -87,6 +108,15 @@ blob/disk comparisons diverge.
   snapshot after enabling the flag is worth eyeballing.
 - **No map artwork.** The Palpagos texture is Pocketpair's; the map is a
   schematic grid with correctly projected dots and an external link, by choice.
+- **The config panel cannot create settings the game does not read.** Keys the
+  image's template omits (`MaxBuildingLimitNumPerPlayer`, `FishingDifficultyRate`,
+  `bAllowEnemyCampSpawnNearBaseCamp`, `bEnableFastTravelOnlyBaseCamp`) do appear
+  in the game's own default ini and are written by the panel; they only take
+  effect if the game build honours them.
+- **Settings apply at the next start, and the panel cannot verify that they
+  applied.** It compares the file with `/v1/api/settings` to show "pending", and
+  clears that when the game reports the new value. A key the game ignores stays
+  pending forever — that is a signal, not a bug.
 - **No tests for the backend.** Frontend pure helpers are pinned by vitest;
   `split_by_day`, `_clip_session`, `range_payload`, `timeline_payload`,
   `map_point` and `project_world` are still checked by ad-hoc scripts only.

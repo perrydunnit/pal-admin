@@ -16,6 +16,9 @@ Two loops, a push fan-out and a schema, all in `app.py`:
                  ├────────────────────────────────────┤
                  │ poll_world()  every 20 s           │──▶ world snapshot (memory)
                  │  /v1/api/game-data → projection    │
+                 ├────────────────────────────────────┤
+                 │ check_restart_queue()  on each poll│──▶ POST /v1/api/shutdown
+                 │  queued restart → empty server?    │
                  └────────────────────────────────────┘
 ```
 
@@ -24,8 +27,12 @@ The collector and the log follower are daemon threads started at import
 only** — more would poll and write concurrently, and the election logic assumes
 a single writer.
 
-Everything is read-only with respect to the game: the app never writes to the
-game container, its files, or its REST API beyond GET.
+Reading the game is read-only: the collector only issues GETs. The one place the
+dashboard *changes* the game is the **Server config** panel, and it does so in
+two narrow ways: it rewrites `PalWorldSettings.ini` in the game's settings
+directory (mounted at `/palconfig`), and it asks the game to restart through
+`POST /v1/api/shutdown` — never through the Docker API. Both are refused unless
+the request came from `LAN_CIDRS`.
 
 ## Data sources
 
@@ -148,6 +155,9 @@ events(ts, kind, name, user_id, player_id,
 chat(ts, name, message, PRIMARY KEY (ts, name, message))  -- replay guard
 
 server(key PK, value)                                     -- /v1/api/info cache
+
+app_state(key PK, value)                                  -- admin actions (JSON),
+                                                          -- e.g. a queued restart
 ```
 
 Timestamps are ISO-8601 UTC with second precision. A session is "open" when
@@ -177,10 +187,11 @@ knows about is `/api/*`.
 frontend/src/
   App.jsx            state owner: month being viewed, selection, zoom
   api.js             useLiveSummary() — one EventSource, 30 s fetch fallback
+  config.js          server-config edit rules (unit-tested)
   timeline.js        pure geometry (unit-tested)
   world.js           guild colours, health, marker projection (unit-tested)
   components/        Header, Cards, WorldPanel, MapPlot, LivePlayers, ChatPanel,
-                     PlayerStats, Calendar, Timeline
+                     PlayerStats, Calendar, Timeline, ServerConfig
 ```
 
 - The page is pushed, not polled: one `EventSource` on `/api/events`. Each frame

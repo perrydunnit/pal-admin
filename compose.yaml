@@ -12,6 +12,10 @@ services:
     volumes:
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      # The game's own settings directory, so the config panel can read and
+      # write PalWorldSettings.ini. Only that one directory: the rest of the
+      # game stack stays out of reach. See docs/PALWORLD-SERVER.md.
+      - ${PAL_SETTINGS_DIR:-/opt/stacks/palworld/palworld/Pal/Saved/Config/LinuxServer}:/palconfig
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5).status == 200 else 1)"]
       interval: 60s

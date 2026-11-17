@@ -13,7 +13,7 @@ set -euo pipefail
 
 REMOTE="${PALADMIN_REMOTE:-paladmin-host}"
 REMOTE_DIR="/opt/stacks/paladmin"
-FILES=(app.py musiclib.py compose.yaml Dockerfile requirements.txt README.md .dockerignore frontend docs)
+FILES=(app.py musiclib.py palconfig.py compose.yaml Dockerfile requirements.txt README.md .dockerignore frontend docs)
 
 DRY=0 SKIP_VERIFY=0 ALLOW_DIRTY=0 ROLLBACK=0
 for arg in "$@"; do
@@ -91,7 +91,7 @@ echo "==> installing"
 ssh "$REMOTE" "set -e
   cd '${remote_stage}'
   # move into place; .env and data/ live only on the server and stay untouched
-  for f in app.py musiclib.py compose.yaml Dockerfile requirements.txt README.md .dockerignore; do
+  for f in app.py musiclib.py palconfig.py compose.yaml Dockerfile requirements.txt README.md .dockerignore; do
     [ -f \"\$f\" ] && cp -f \"\$f\" '${REMOTE_DIR}/'
   done
   rm -rf '${REMOTE_DIR}/templates' '${REMOTE_DIR}/docs' '${REMOTE_DIR}/frontend'

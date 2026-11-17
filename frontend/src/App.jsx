@@ -9,6 +9,7 @@ import MusicPanel from './components/MusicPanel.jsx'
 import PlayerStats from './components/PlayerStats.jsx'
 import Calendar from './components/Calendar.jsx'
 import Timeline from './components/Timeline.jsx'
+import ServerConfig from './components/ServerConfig.jsx'
 
 const MIN_ZOOM = 0.5
 const MAX_ZOOM = 3
@@ -162,6 +163,11 @@ export default function App() {
           zoom={zoom}
           apiRef={timelineApi}
         />
+      </section>
+
+      <section>
+        <h2>Server config</h2>
+        <ServerConfig />
       </section>
 
       <div className="foot">

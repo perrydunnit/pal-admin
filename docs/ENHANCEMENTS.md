@@ -119,10 +119,10 @@ blob/disk comparisons diverge.
 - **No map artwork.** The Palpagos texture is Pocketpair's; the map is a
   schematic grid with correctly projected dots and an external link, by choice.
 - **No pal artwork either, only a directory to put it in.** `PAL_ICON_DIR` is
-  served by `/api/pal-icon/<species>` and nothing is bundled or hotlinked; a
-  missing file is a generated sigil (`emblemGrid` in `world.js`), which is the
-  normal state. Keep it that way in the repo: an icon set is the operator's call,
-  on their instance.
+  served by `/api/pal-icon/<species>` and nothing is bundled or hotlinked. A pal
+  without a portrait shows no portrait — do not substitute generated stand-ins;
+  they were tried and rejected. Keep it that way in the repo: an icon set is the
+  operator's call, on their instance.
 - **The config panel cannot create settings the game does not read.** Keys the
   image's template omits (`MaxBuildingLimitNumPerPlayer`, `FishingDifficultyRate`,
   `bAllowEnemyCampSpawnNearBaseCamp`, `bEnableFastTravelOnlyBaseCamp`) do appear

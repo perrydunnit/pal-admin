@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import MapPlot from './MapPlot.jsx'
 import { apiUrl } from '../api.js'
-import { actionLabel, colorFor, emblemGrid, healthPct, mapMarkers, speciesKey, worldStatus } from '../world.js'
+import { actionLabel, colorFor, healthPct, mapMarkers, speciesKey, worldStatus } from '../world.js'
 
 function HealthBar({ hp, maxHp }) {
   const pct = healthPct(hp, maxHp)
@@ -10,53 +10,23 @@ function HealthBar({ hp, maxHp }) {
   return <div className={`bar hp${tone}`}><i style={{ width: `${pct}%` }} /></div>
 }
 
-// A portrait the operator dropped into PAL_ICON_DIR, or a generated sigil. No
-// artwork is bundled: the game's art is Pocketpair's, so a missing file is the
-// normal state and the sigil carries the identity instead.
+// The portrait, when the operator supplied one in PAL_ICON_DIR. Nothing is
+// drawn in its place: no artwork ships and none is generated, so a pal without
+// a portrait is simply its name in the list.
 function PalFace({ pal, icons, size = 16 }) {
   const [broken, setBroken] = useState(false)
   const key = speciesKey(pal)
-  if (key && icons.has(key) && !broken) {
-    return (
-      <img
-        className="pal-icon"
-        src={apiUrl(`/api/pal-icon/${encodeURIComponent(key)}`)}
-        alt=""
-        width={size}
-        height={size}
-        loading="lazy"
-        onError={() => setBroken(true)}
-      />
-    )
-  }
-  const grid = emblemGrid(key || pal.name)
-  const cell = size / grid.length
+  if (!key || !icons.has(key) || broken) return null
   return (
-    <svg
-      className="pal-emblem"
+    <img
+      className="pal-icon"
+      src={apiUrl(`/api/pal-icon/${encodeURIComponent(key)}`)}
+      alt=""
       width={size}
       height={size}
-      viewBox={`0 0 ${size} ${size}`}
-      aria-hidden="true"
-      style={{ '--c': colorFor(key || pal.name || '?') }}
-    >
-      <rect className="pal-emblem-bg" width={size} height={size} rx={size * 0.24} />
-      {grid.map((row, y) =>
-        row.map((on, x) =>
-          on ? (
-            <rect
-              key={`${x}-${y}`}
-              className="pal-emblem-ink"
-              x={x * cell + cell * 0.1}
-              y={y * cell + cell * 0.1}
-              width={cell * 0.8}
-              height={cell * 0.8}
-              rx={cell * 0.2}
-            />
-          ) : null,
-        ),
-      )}
-    </svg>
+      loading="lazy"
+      onError={() => setBroken(true)}
+    />
   )
 }
 

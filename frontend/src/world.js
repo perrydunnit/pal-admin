@@ -84,39 +84,6 @@ export function speciesKey(pal) {
   return String(pal?.species || pal?.name || '').toLowerCase()
 }
 
-// A symmetric five-by-five grid derived from the seed. It is the fallback
-// portrait: distinct per pal, identical on every reload, and generated here
-// rather than copied from anyone's artwork. Cells are mirrored so the tile reads
-// as a sigil instead of noise.
-export function emblemGrid(seed, size = 5) {
-  let h = 2166136261 >>> 0
-  for (const ch of String(seed ?? '')) {
-    h ^= ch.charCodeAt(0)
-    h = Math.imul(h, 16777619) >>> 0
-  }
-  const next = () => {
-    h = (Math.imul(h, 1664525) + 1013904223) >>> 0
-    return ((h >>> 17) & 1) === 1
-  }
-  const half = Math.ceil(size / 2)
-  const grid = []
-  for (let y = 0; y < size; y += 1) {
-    const row = []
-    for (let x = 0; x < half; x += 1) row[x] = next()
-    for (let x = half; x < size; x += 1) row[x] = row[size - 1 - x]
-    grid.push(row)
-  }
-  // An almost-empty tile is unreadable at 16px, so guarantee a mark.
-  const filled = grid.flat().filter(Boolean).length
-  if (filled < 4) {
-    const mid = Math.floor(size / 2)
-    grid[mid][mid] = true
-    grid[mid][mid - 1] = true
-    grid[mid][mid + 1] = true
-  }
-  return grid
-}
-
 export function worldStatus(world) {
   if (!world) return { tone: 'wait', text: 'Checking for world data…' }
   if (world.available) return { tone: 'on', text: `Live world snapshot · ${world.ts || ''}` }

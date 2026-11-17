@@ -1,13 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import {
-  actionLabel,
-  colorFor,
-  emblemGrid,
-  healthPct,
-  mapMarkers,
-  speciesKey,
-  worldStatus,
-} from './world.js'
+import { actionLabel, colorFor, healthPct, mapMarkers, speciesKey, worldStatus } from './world.js'
 
 const restSummary = {
   players: [
@@ -73,23 +65,5 @@ describe('world helpers', () => {
     expect(speciesKey({ species: 'Anubis', name: 'Anubis' })).toBe('anubis')
     expect(speciesKey({ name: 'Dinossom Lux' })).toBe('dinossom lux')
     expect(speciesKey(null)).toBe('')
-  })
-
-  it('draws a stable, mirrored sigil per species', () => {
-    const grid = emblemGrid('anubis')
-    expect(grid).toHaveLength(5)
-    expect(grid.every((row) => row.length === 5)).toBe(true)
-    // deterministic across calls, and the same for the same pal
-    expect(emblemGrid('anubis')).toEqual(grid)
-    // mirrored left-to-right so it reads as a sigil
-    for (const row of grid) expect([...row].reverse()).toEqual(row)
-    // never a blank tile at 16px
-    expect(grid.flat().filter(Boolean).length).toBeGreaterThanOrEqual(4)
-  })
-
-  it('gives different pals different sigils', () => {
-    const seeds = ['anubis', 'elecpanda', 'pinkcat', 'sheepball', 'manticore_dark']
-    const drawn = new Set(seeds.map((seed) => JSON.stringify(emblemGrid(seed))))
-    expect(drawn.size).toBeGreaterThan(3)
   })
 })

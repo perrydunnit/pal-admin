@@ -78,9 +78,6 @@ td.num, th.num { text-align: right; }
 .pal:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .pal.on { border-color: var(--accent); }
 .pal-icon { border-radius: 4px; object-fit: cover; display: block; flex: none; background: #12141a; }
-.pal-emblem { display: block; flex: none; border-radius: 4px; }
-.pal-emblem-bg { fill: #0f1218; stroke: #2a2f3a; stroke-width: .5; }
-.pal-emblem-ink { fill: var(--c, var(--accent)); }
 .pal-card {
   position: fixed; z-index: 40; width: 260px; text-align: left;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 10px;

@@ -94,6 +94,13 @@ blob/disk comparisons diverge.
 - **`OptionSettings` is one line with no escape syntax.** A double quote or a
   newline in a free-text value corrupts every key after it, so validation
   rejects both before anything is written. Commas are fine inside the quotes.
+- **Never write a relative `fetch()`/`EventSource` URL.** A page opened from a
+  bookmark that embeds credentials (`https://admin:PASSWORD@host/`) keeps them
+  in its base URL, and the browser then refuses with *"Request cannot be
+  constructed from a URL that includes credentials"*. That is exactly how a
+  phone bookmarks a basic-auth site, and it breaks every data panel while the
+  HTML still loads — the page looks half-alive. Build requests with `apiUrl()`
+  from `location.origin`, which never carries credentials.
 
 ## Known gaps
 

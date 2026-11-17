@@ -183,10 +183,13 @@ td.num, th.num { text-align: right; }
   :root { --leftw: 96px; }
   .wrap { padding: 16px 12px 40px; }
   .card .v { font-size: 20px; }
-  .cell { min-height: 62px; padding: 5px 6px; }
-  .cell .tot, .cell .chip { display: none; }
-  .cell.has { background: rgba(91,157,255,.10); }
-  .cell.has:hover { background: rgba(91,157,255,.18); }
+  .cell { min-height: 70px; padding: 5px 6px; }
+  /* The chips do not fit in a phone cell, but hiding every trace of activity
+     makes the calendar look empty, so keep the day total and a clear tint. */
+  .cell .chip { display: none; }
+  .cell .tot { position: static; display: block; font-size: 10px; margin-top: 2px; }
+  .cell.has { background: rgba(91,157,255,.22); }
+  .cell.has:hover { background: rgba(91,157,255,.30); }
   .cal-head .label { font-size: 14px; }
   .tl-left { font-size: 11px; padding: 0 7px; }
 }

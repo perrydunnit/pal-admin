@@ -1,5 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
 
+// A browser refuses to build a Request from a URL that carries credentials:
+// "Request cannot be constructed from a URL that includes credentials". That is
+// exactly what happens when the page was opened from a bookmark like
+// https://admin:password@pal-admin.example.com/ — the document's base URL keeps
+// the credentials, so every *relative* /api/... URL inherits them and every
+// fetch() throws. `location.origin` never includes them, so requests are built
+// from it explicitly. (Navigations, and therefore the HTML and its assets,
+// still work either way, which is why the page loads and only the data does not.)
+export function apiUrl(path, origin = typeof location === 'undefined' ? '' : location.origin) {
+  return `${origin}${path}`
+}
+
+// Cleans the address bar once, so anything left relative in the document and
+// anything the user copies from it is credential-free too.
+export function forgetUrlCredentials() {
+  if (typeof window === 'undefined' || !window.history?.replaceState) return
+  const { origin, pathname, search, hash } = window.location
+  const clean = `${origin}${pathname}${search}${hash}`
+  if (window.location.href !== clean) window.history.replaceState(null, '', clean)
+}
+
 // One EventSource for the whole app. Every frame is a full /api/summary, so the
 // components re-render from the same shape they get on first load. If the
 // stream cannot be established the old 30 s fetch keeps the page current.
@@ -15,7 +36,7 @@ export function useLiveSummary() {
 
     const load = async () => {
       try {
-        const res = await fetch('/api/summary')
+        const res = await fetch(apiUrl('/api/summary'), { cache: 'no-store' })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         const data = await res.json()
         if (!cancelled) {
@@ -31,7 +52,7 @@ export function useLiveSummary() {
 
     let source
     try {
-      source = new EventSource('/api/events')
+      source = new EventSource(apiUrl('/api/events'))
       source.addEventListener('update', (event) => {
         liveRef.current = true
         setLive(true)
@@ -70,7 +91,7 @@ export function useLiveSummary() {
 export async function fetchJSON(url, attempt = 0) {
   let res
   try {
-    res = await fetch(url, { cache: 'no-store' })
+    res = await fetch(apiUrl(url), { cache: 'no-store' })
   } catch (err) {
     if (attempt === 0) {
       await new Promise((resolve) => setTimeout(resolve, 400))
@@ -89,20 +110,20 @@ export async function listMusic() {
 export async function uploadMusic(file) {
   const body = new FormData()
   body.append('file', file)
-  const res = await fetch('/api/music', { method: 'POST', body })
+  const res = await fetch(apiUrl('/api/music'), { method: 'POST', body })
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
   return data
 }
 
 export async function deleteMusic(id) {
-  const res = await fetch(`/api/music/${id}`, { method: 'DELETE' })
+  const res = await fetch(apiUrl(`/api/music/${id}`), { method: 'DELETE' })
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
 
 async function sendJSON(url, method, body) {
-  const res = await fetch(url, {
+  const res = await fetch(apiUrl(url), {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),

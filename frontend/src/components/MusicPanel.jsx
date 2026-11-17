@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ACCEPT, formatBytes, kindLabel, sortTracks, usage, validateFile } from '../music.js'
+import { apiUrl } from '../api.js'
 
 // Uploads go to /api/music and land in the container's /data/music volume, next
 // to the database, so they survive redeploys and are covered by the same backup.
@@ -13,7 +14,7 @@ export default function MusicPanel({ summary }) {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch('/api/music')
+      const res = await fetch(apiUrl('/api/music'))
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const data = await res.json()
       setTracks(sortTracks(data.tracks))
@@ -55,7 +56,7 @@ export default function MusicPanel({ summary }) {
         const body = new FormData()
         body.append('file', file)
         try {
-          const res = await fetch('/api/music', { method: 'POST', body })
+          const res = await fetch(apiUrl('/api/music'), { method: 'POST', body })
           const data = await res.json().catch(() => ({}))
           if (!res.ok) {
             skipped.push(`${file.name}: ${data.error || `HTTP ${res.status}`}`)
@@ -82,7 +83,7 @@ export default function MusicPanel({ summary }) {
       if (!window.confirm(`Delete "${track.name}"? Clients using it will lose it.`)) return
       setError(null)
       try {
-        const res = await fetch(`/api/music/${track.id}`, { method: 'DELETE' })
+        const res = await fetch(apiUrl(`/api/music/${track.id}`), { method: 'DELETE' })
         if (!res.ok) throw new Error(`HTTP ${res.status}`)
         setNote(`Deleted ${track.name}.`)
         load()
@@ -140,7 +141,7 @@ export default function MusicPanel({ summary }) {
             {tracks.map((track) => (
               <tr key={track.id}>
                 <td>
-                  <a href={track.url} download>
+                  <a href={apiUrl(track.url)} download>
                     {track.name}
                   </a>
                   {track.source && track.source !== `${track.name}${track.ext}` && (

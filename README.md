@@ -235,6 +235,12 @@ from the *last* hop, which is the one Traefik wrote; a forged header therefore
 cannot place a caller on the local network. Anything the host or the router
 itself sends is seen as `192.168.0.1` and counts as local, by design.
 
+Opening the page from a bookmark that embeds the credentials
+(`https://admin:PASSWORD@pal-admin.example.com/`) is supported: browsers refuse
+to build a request from a URL that carries them, so the UI builds every API URL
+from `location.origin` and cleans the address bar on load. Without that, the
+page renders but every panel that fetches its own data fails.
+
 ## Operations
 
 From a checkout, publish and rebuild in one step — it verifies, refuses a dirty

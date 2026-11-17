@@ -231,8 +231,9 @@ The app adds one gate of its own on top of basic auth: anything that changes the
 game — saving settings, restarting it, cancelling a queued restart — is refused
 unless the request came from `LAN_CIDRS`. The client address is taken from
 `X-Forwarded-For` only when the socket peer is not already inside the LAN, and
-from the *last* hop, which is the one Traefik appended; a forged header
-therefore cannot place a caller on the local network.
+from the *last* hop, which is the one Traefik wrote; a forged header therefore
+cannot place a caller on the local network. Anything the host or the router
+itself sends is seen as `192.168.0.1` and counts as local, by design.
 
 ## Operations
 

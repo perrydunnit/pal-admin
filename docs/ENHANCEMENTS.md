@@ -70,10 +70,13 @@ blob/disk comparisons diverge.
   `POST /v1/api/shutdown`, the game saves and exits, and `restart: unless-stopped`
   brings the container back. `docker restart` is still forbidden: it can SIGKILL
   mid-save.
-- **The LAN gate trusts the last `X-Forwarded-For` hop.** Traefik appends the
-  peer it sees, so a forged header cannot move the caller into the LAN. The
-  socket address is used directly when it is already local. Check
-  `tests/test_server_config.py` before changing the order.
+- **The LAN gate trusts the last `X-Forwarded-For` hop.** Traefik replaces the
+  header with the peer it saw — verified on this host, where a forged
+  `X-Forwarded-For: 192.168.0.99` came back as the real peer — so a spoofed
+  header cannot move a caller into the LAN. The socket address is used directly
+  when it is already local. Anything the host or the router itself sends arrives
+  as `192.168.0.1` and therefore counts as local, which is the intended trust
+  level. Check `tests/test_server_config.py` before changing the order.
 - **Queued restarts are persisted in `app_state`, not memory.** A dashboard
   redeploy must not silently drop the request, and the collector is the only
   thing that fires it, so the queue survives as long as the database does.

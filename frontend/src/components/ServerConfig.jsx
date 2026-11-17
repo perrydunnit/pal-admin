@@ -57,7 +57,8 @@ export default function ServerConfig() {
   const [data, setData] = useState(null)
   const [draft, setDraft] = useState({})
   const [cleared, setCleared] = useState(() => new Set())
-  const [collapsed, setCollapsed] = useState(() => new Set())
+  // null until the first payload decides whether sections start open.
+  const [collapsed, setCollapsed] = useState(null)
   const [filter, setFilter] = useState('')
   const [busy, setBusy] = useState(false)
   const [note, setNote] = useState(null)
@@ -75,6 +76,14 @@ export default function ServerConfig() {
   useEffect(() => {
     load()
   }, [load])
+
+  // 122 rows of controls is a lot for a phone to paint. Start with the sections
+  // folded there, and leave them open on a desktop where they all fit.
+  useEffect(() => {
+    if (!data || collapsed !== null) return
+    const narrow = typeof window !== 'undefined' && window.innerWidth < 700
+    setCollapsed(new Set(narrow ? data.groups.map((group) => group.name) : []))
+  }, [data, collapsed])
 
   const rows = useMemo(
     () => (data?.groups ?? []).flatMap((group) => group.settings),
@@ -169,7 +178,7 @@ export default function ServerConfig() {
 
   const toggle = (name) => {
     setCollapsed((current) => {
-      const next = new Set(current)
+      const next = new Set(current ?? [])
       if (next.has(name)) next.delete(name)
       else next.add(name)
       return next
@@ -305,7 +314,7 @@ export default function ServerConfig() {
         const visible = group.settings.filter((row) => matchesFilter(row, needle))
         if (!visible.length) return null
         const edited = visible.filter((row) => dirtyKeys.has(row.key)).length
-        const closed = collapsed.has(group.name) && !needle
+        const closed = (collapsed ?? new Set()).has(group.name) && !needle
         return (
           <div className="cfg-group" key={group.name}>
             <button type="button" className="cfg-group-head" onClick={() => toggle(group.name)}>

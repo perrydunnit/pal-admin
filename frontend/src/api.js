@@ -64,8 +64,20 @@ export function useLiveSummary() {
   return { summary, live, tick, error }
 }
 
-export async function fetchJSON(url) {
-  const res = await fetch(url)
+// A network-level failure (the request never got an answer) is worth one retry:
+// mobile browsers drop the first request of a freshly woken connection often
+// enough that a single failure says nothing about the server.
+export async function fetchJSON(url, attempt = 0) {
+  let res
+  try {
+    res = await fetch(url, { cache: 'no-store' })
+  } catch (err) {
+    if (attempt === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 400))
+      return fetchJSON(url, 1)
+    }
+    throw new Error(`network error: ${err?.message || err}`)
+  }
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }

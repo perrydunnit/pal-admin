@@ -33,4 +33,7 @@ EXPOSE 8000
 # ~150 MB on a slow link needs a bigger value here too. exec keeps gunicorn as
 # the process that receives SIGTERM from `docker stop`.
 ENV GUNICORN_TIMEOUT=120
-CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 8 --timeout \"${GUNICORN_TIMEOUT}\" --bind 0.0.0.0:8000 app:app"]
+# --access-logfile keeps one line per request in the container log. It is the
+# only way to answer "it does not work on my phone": you can see whether the
+# request arrived, from which client, and with what status.
+CMD ["sh", "-c", "exec gunicorn --workers 1 --threads 8 --timeout \"${GUNICORN_TIMEOUT}\" --access-logfile - --bind 0.0.0.0:8000 app:app"]

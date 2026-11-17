@@ -44,6 +44,24 @@ class SpeciesTests(unittest.TestCase):
 
 
 @needs_app
+class IconNameTests(unittest.TestCase):
+    """The game's own portrait files, which is what an export of the pak gives."""
+
+    def test_reads_the_games_icon_names(self):
+        for stem, expected in [
+            ("T_Anubis_icon_normal", "Anubis"),
+            ("T_Anubis_Icon_Normal", "Anubis"),
+            ("T_Anubis_Skin001_icon_normal", "Anubis"),
+            ("T_FlowerDinosaur_Electric_icon_normal", "FlowerDinosaur_Electric"),
+            ("T_PinkCat_Skin004_icon_normal", "PinkCat"),
+            ("Anubis", "Anubis"),
+            ("Grizzbolt", "Grizzbolt"),
+        ]:
+            with self.subTest(stem=stem):
+                self.assertEqual(paladmin.icon_species(stem), expected)
+
+
+@needs_app
 class IconTests(unittest.TestCase):
     def setUp(self):
         self.directory = os.environ["PAL_ICON_DIR"]
@@ -69,6 +87,17 @@ class IconTests(unittest.TestCase):
         icons = paladmin.pal_icons()
         self.assertEqual(sorted(icons), ["anubis", "sheepball"])
         self.assertEqual(icons["anubis"], "Anubis.png")
+
+    def test_an_exported_pak_folder_works_without_renaming(self):
+        self.write("T_Anubis_icon_normal.png")
+        self.write("T_Anubis_Skin001_icon_normal.png")
+        self.write("T_PinkCat_icon_normal.png")
+        self.write("T_PinkCat_Skin003_icon_normal.png")
+        self.write("T_Anubis_icon_normal.uasset")   # not an image
+        icons = paladmin.pal_icons()
+        self.assertEqual(sorted(icons), ["anubis", "pinkcat"])
+        self.assertEqual(icons["anubis"], "T_Anubis_icon_normal.png")
+        self.assertEqual(icons["pinkcat"], "T_PinkCat_icon_normal.png")
 
     def test_case_insensitive_lookup_is_what_the_route_uses(self):
         self.write("Anubis.png")

@@ -191,11 +191,21 @@ data/palicons/ElecPanda.png       # BP_ElecPanda_BOSS_C
 data/palicons/FlowerDinosaur_Electric.png
 ```
 
+The game itself ships a portrait per pal at
+`/Game/Pal/Texture/PalIcon/Normal/T_<Species>_icon_normal` inside
+`Pal/Content/Paks/Pal-LinuxServer.pak` — so an export of that folder can be
+dropped in unchanged; `T_Anubis_icon_normal.png` and
+`T_Anubis_Skin001_icon_normal.png` both resolve to `Anubis`, with the plain
+portrait preferred over a skin. It is UE texture data, not a file the game
+serves, so getting it out means unpacking the pak with a UE tool (FModel,
+repak, UnrealPak) and converting the textures; that is a modding step, and the
+art stays Pocketpair's, so none of it is shipped here.
+
 Names match the species (`Class` without `BP_`/`_C`/`_BOSS`/`_MiddleBoss`),
-case-insensitively; `.png`, `.jpg`, `.webp` and `.gif` are served. A missing
-file simply keeps the monogram, and `GET /api/pal-icon/<species>` answers 404
-for it. Which species have portraits is in `summary.pal_icons`, so the browser
-only requests what exists.
+case-insensitively; `.png`, `.jpg`, `.webp` and `.gif` are served, `.uasset`
+and friends are ignored. A missing file simply keeps the monogram, and
+`GET /api/pal-icon/<species>` answers 404 for it. Which species have portraits
+is in `summary.pal_icons`, so the browser only requests what exists.
 
 ## Timeline
 

@@ -668,6 +668,19 @@ def pal_species(class_name, display_name=""):
 
 _icon_cache = {"at": 0.0, "icons": {}}
 
+# The game ships one portrait per pal as /Game/Pal/Texture/PalIcon/Normal/
+# T_<Species>_icon_normal, with alternates under SKin/. An export of that folder
+# is usable as-is.
+_ICON_STEM_RE = re.compile(r"^T_(?P<species>.+?)(?:_skin\d+)?_icon(?:_normal)?$", re.I)
+
+
+def icon_species(stem):
+    """`T_Anubis_icon_normal`, `T_Anubis_Skin001_icon_normal` and `Anubis` all mean Anubis."""
+    match = _ICON_STEM_RE.match(stem or "")
+    if match:
+        return match.group("species")
+    return str(stem or "")
+
 
 def pal_icons():
     """{lowercased species: filename} for the portraits this instance has."""
@@ -678,8 +691,15 @@ def pal_icons():
     try:
         for name in sorted(os.listdir(PAL_ICON_DIR)):
             stem, ext = os.path.splitext(name)
-            if stem and ext.lower() in PAL_ICON_TYPES:
-                found.setdefault(stem.lower(), name)
+            if not stem or ext.lower() not in PAL_ICON_TYPES:
+                continue
+            key = icon_species(stem).lower()
+            if not key:
+                continue
+            # The plain portrait wins over a skin/alternate of the same pal.
+            current = found.get(key)
+            if current is None or ("_skin" in current.lower() and "_skin" not in name.lower()):
+                found[key] = name
     except OSError:
         pass
     with _config_lock:

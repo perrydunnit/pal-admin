@@ -54,7 +54,6 @@ the first time someone plays it.
 See [docs/API.md](docs/API.md#music-library) for the endpoints.
 
 ## Server config
-
 The **Server config** panel lists every `PalWorldSettings.ini` key the game
 ships, with the value in the file, the game's default when the file has none,
 and a one-line explanation of what it does. Saving writes those keys into the
@@ -173,6 +172,30 @@ The map is a schematic coordinate plot, not the game's map texture: the artwork
 belongs to Pocketpair and is deliberately neither bundled nor hotlinked. The
 projection uses the community calibration (`MAP_BOUNDS` in `app.py`), which is
 also what produces the `X … Y …` read-out shown for players and bases.
+
+### Pal portraits
+
+Hovering a pal chip — a base worker or a party pal — opens a card with its
+level, HP, what it is doing (`BP_ActionSleep` is shown as “Sleep”), its guild
+and its trainer. Each chip also carries a small portrait tile.
+
+By default that tile is a coloured monogram, because **no artwork ships with
+this repo** and none is fetched from anywhere: the pal images are Pocketpair's.
+If you want real portraits, drop image files into `PAL_ICON_DIR` (default
+`/data/palicons`, i.e. `data/palicons` in the stack directory, so they are
+covered by the same backups) and they appear on the next page load:
+
+```
+data/palicons/Anubis.png          # from base pals' Class, BP_Anubis_MiddleBoss_C
+data/palicons/ElecPanda.png       # BP_ElecPanda_BOSS_C
+data/palicons/FlowerDinosaur_Electric.png
+```
+
+Names match the species (`Class` without `BP_`/`_C`/`_BOSS`/`_MiddleBoss`),
+case-insensitively; `.png`, `.jpg`, `.webp` and `.gif` are served. A missing
+file simply keeps the monogram, and `GET /api/pal-icon/<species>` answers 404
+for it. Which species have portraits is in `summary.pal_icons`, so the browser
+only requests what exists.
 
 ## Timeline
 

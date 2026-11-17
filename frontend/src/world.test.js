@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { colorFor, healthPct, mapMarkers, worldStatus } from './world.js'
+import { actionLabel, colorFor, healthPct, mapMarkers, speciesKey, worldStatus } from './world.js'
 
 const restSummary = {
   players: [
@@ -51,5 +51,19 @@ describe('world helpers', () => {
     expect(worldStatus({ available: true, ts: 'now' }).tone).toBe('on')
     expect(worldStatus({ available: false, reason: 'error', detail: 'HTTP 500' }).text).toContain('HTTP 500')
     expect(worldStatus(null).tone).toBe('wait')
+  })
+
+  it('labels an action blueprint readably', () => {
+    expect(actionLabel('BP_ActionSleep')).toBe('Sleep')
+    expect(actionLabel('BP_ActionBaseCampWork')).toBe('Base Camp Work')
+    expect(actionLabel('BP_ActionMove_C')).toBe('Move')
+    expect(actionLabel('')).toBe('')
+    expect(actionLabel(null)).toBe('')
+  })
+
+  it('keys portraits by species, falling back to the display name', () => {
+    expect(speciesKey({ species: 'Anubis', name: 'Anubis' })).toBe('anubis')
+    expect(speciesKey({ name: 'Dinossom Lux' })).toBe('dinossom lux')
+    expect(speciesKey(null)).toBe('')
   })
 })

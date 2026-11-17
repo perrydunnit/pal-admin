@@ -44,6 +44,15 @@ MUSIC_DIR = os.environ.get("MUSIC_DIR", os.path.join(os.path.dirname(DB_PATH) or
 MUSIC_MAX_BYTES = int(os.environ.get("MUSIC_MAX_BYTES", str(256 * 1024 * 1024)))
 STATIC_DIR = os.environ.get(
     "STATIC_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "static"))
+# Optional pal portraits, supplied by whoever runs this instance. Nothing is
+# shipped with the repo: the game's art is Pocketpair's, so a missing file falls
+# back to a coloured monogram. Named after the species, e.g. Anubis.png.
+PAL_ICON_DIR = os.environ.get(
+    "PAL_ICON_DIR", os.path.join(os.path.dirname(DB_PATH) or ".", "palicons"))
+PAL_ICON_TYPES = {
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".webp": "image/webp", ".gif": "image/gif",
+}
 POLL_SECONDS = int(os.environ.get("POLL_SECONDS", "30"))
 MIN_POLL_GAP = float(os.environ.get("MIN_POLL_GAP", "2"))
 INFO_REFRESH_SECONDS = int(os.environ.get("INFO_REFRESH_SECONDS", "1800"))
@@ -210,6 +219,7 @@ def db():
 def init_db():
     os.makedirs(os.path.dirname(DB_PATH) or ".", exist_ok=True)
     os.makedirs(MUSIC_DIR, exist_ok=True)
+    os.makedirs(PAL_ICON_DIR, exist_ok=True)
     with db() as conn:
         conn.executescript(SCHEMA)
         _add_missing_columns(conn)
@@ -636,6 +646,47 @@ def _split_id(value):
     return str(value or "").split(" : ")[0].strip()
 
 
+# Boss and variant blueprints share the base species' artwork.
+_PAL_VARIANT_RE = re.compile(r"_(MiddleBoss|Boss|BOSS|MAX|Max|Tower|RaidBoss|Raid)$")
+
+
+def pal_species(class_name, display_name=""):
+    """`BP_Anubis_MiddleBoss_C` and `Anubis` name the same pal.
+
+    Used as the icon key, so a single `Anubis.png` covers the boss, the alpha
+    and every tamed one.
+    """
+    raw = str(class_name or "").strip().rsplit("/", 1)[-1]
+    if raw:
+        raw = re.sub(r"_(C|02)$", "", raw)
+        raw = re.sub(r"^(BP|SK)_", "", raw)
+        raw = _PAL_VARIANT_RE.sub("", raw)
+        if raw:
+            return raw
+    return re.sub(r"[^A-Za-z0-9]", "", str(display_name or ""))
+
+
+_icon_cache = {"at": 0.0, "icons": {}}
+
+
+def pal_icons():
+    """{lowercased species: filename} for the portraits this instance has."""
+    with _config_lock:
+        if time.monotonic() - _icon_cache["at"] < 30:
+            return _icon_cache["icons"]
+    found = {}
+    try:
+        for name in sorted(os.listdir(PAL_ICON_DIR)):
+            stem, ext = os.path.splitext(name)
+            if stem and ext.lower() in PAL_ICON_TYPES:
+                found.setdefault(stem.lower(), name)
+    except OSError:
+        pass
+    with _config_lock:
+        _icon_cache.update(at=time.monotonic(), icons=found)
+    return found
+
+
 def _base_name(raw):
     """Bases are reported with the game's untranslated template placeholder."""
     name = str(raw or "").strip()
@@ -676,11 +727,13 @@ def _unit(actor):
     """Name/level/health/position for one actor, whatever casing the API uses."""
     position = map_point(_field(actor, "LocationX", "location_x", "X", "x"),
                          _field(actor, "LocationY", "location_y", "Y", "y"))
+    name = str(_field(actor, "NickName", "nickname", "Nickname", "Name", default=""))
     item = {
         "id": _split_id(_field(actor, "InstanceID", "instance_id", "instanceId", default=""))
               or str(_field(actor, "userid", "userId", default="")),
         "runtime_id": str(_field(actor, "InstanceID", "instance_id", "instanceId", default="")),
-        "name": str(_field(actor, "NickName", "nickname", "Nickname", "Name", default="")),
+        "name": name,
+        "species": pal_species(_field(actor, "Class", "class", default=""), name),
         "level": _number(_field(actor, "level", "Level")),
         "hp": _number(_field(actor, "HP", "hp")),
         "max_hp": _number(_field(actor, "MaxHP", "max_hp", "MaxHp")),
@@ -1333,6 +1386,9 @@ def summary_payload(month=None):
         "chat": [dict(r) for r in reversed(chat)],
         "world": world_snapshot,
         "music": music_totals(conn),
+        # Lowercased species keys this instance has portraits for, so the UI can
+        # ask for the ones that exist instead of probing for every pal.
+        "pal_icons": sorted(pal_icons()),
         "now": iso(now),
     }
 
@@ -1708,6 +1764,22 @@ def api_music_file(music_id):
                      download_name=row["name"] + row["ext"])
 
 
+@app.route("/api/pal-icon/<species>")
+def api_pal_icon(species):
+    """Serve an operator-supplied portrait, or 404 and let the UI draw a monogram."""
+    filename = pal_icons().get(species.strip().lower())
+    if not filename:
+        return jsonify(error="no portrait for that pal"), 404
+    path = os.path.join(PAL_ICON_DIR, filename)
+    if not os.path.isfile(path):
+        return jsonify(error="portrait vanished"), 404
+    response = send_file(
+        path, mimetype=PAL_ICON_TYPES[os.path.splitext(filename)[1].lower()],
+        conditional=True)
+    response.headers["Cache-Control"] = "public, max-age=3600"
+    return response
+
+
 @app.route("/api/server-config")
 def api_server_config():
     return jsonify(config_payload())
@@ -1815,6 +1887,9 @@ def cache_headers(response):
     if request.path.startswith("/static/assets/"):
         # Vite fingerprints these file names, so they are safe to pin.
         response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif request.path.startswith("/api/pal-icon/"):
+        # Portraits are replaced by hand, so they are not pinned like assets.
+        response.headers["Cache-Control"] = "public, max-age=3600"
     elif request.path == "/" or request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-cache"
     return response

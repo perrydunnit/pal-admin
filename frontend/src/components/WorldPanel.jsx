@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import MapPlot from './MapPlot.jsx'
-import { colorFor, healthPct, mapMarkers, worldStatus } from '../world.js'
+import { apiUrl } from '../api.js'
+import { actionLabel, colorFor, healthPct, mapMarkers, speciesKey, worldStatus } from '../world.js'
 
 function HealthBar({ hp, maxHp }) {
   const pct = healthPct(hp, maxHp)
@@ -9,14 +10,101 @@ function HealthBar({ hp, maxHp }) {
   return <div className={`bar hp${tone}`}><i style={{ width: `${pct}%` }} /></div>
 }
 
-function PalChips({ pals, emptyLabel }) {
+// A portrait the operator dropped into PAL_ICON_DIR, or a monogram in the pal's
+// colour. Nothing is bundled: the game's art is Pocketpair's, so a missing file
+// is normal and the monogram carries the identity instead.
+function PalFace({ pal, icons, size = 16 }) {
+  const [broken, setBroken] = useState(false)
+  const key = speciesKey(pal)
+  if (key && icons.has(key) && !broken) {
+    return (
+      <img
+        className="pal-icon"
+        src={apiUrl(`/api/pal-icon/${encodeURIComponent(key)}`)}
+        alt=""
+        width={size}
+        height={size}
+        loading="lazy"
+        onError={() => setBroken(true)}
+      />
+    )
+  }
+  const initial = (pal.name || '?').trim().charAt(0).toUpperCase() || '?'
+  return (
+    <i className="pal-mono" style={{ '--c': colorFor(pal.name || '?'), width: size, height: size, fontSize: Math.round(size * 0.55) }}>
+      {initial}
+    </i>
+  )
+}
+
+function PalCard({ pal, icons, anchor }) {
+  const level = pal.level != null ? Math.round(pal.level) : null
+  const doing = actionLabel(pal.action)
+  const above = anchor.top > (typeof window === 'undefined' ? 0 : window.innerHeight) / 2
+  const left = Math.max(8, Math.min(anchor.left, (typeof window === 'undefined' ? 0 : window.innerWidth) - 268))
+  return (
+    <div
+      className={`pal-card${above ? ' above' : ''}`}
+      style={above ? { left, bottom: `calc(100% - ${anchor.top - 8}px)` } : { left, top: anchor.bottom + 8 }}
+    >
+      <div className="pal-card-head">
+        <PalFace pal={pal} icons={icons} size={44} />
+        <div>
+          <b>{pal.name || 'Pal'}</b>
+          <div className="muted small">
+            {pal.species && pal.species !== pal.name ? `${pal.species} · ` : ''}
+            {level != null ? `Lv ${level}` : 'level unknown'}
+          </div>
+        </div>
+      </div>
+      {pal.hp != null && pal.max_hp ? (
+        <>
+          <HealthBar hp={pal.hp} maxHp={pal.max_hp} />
+          <div className="muted small">HP {Math.round(pal.hp)} / {Math.round(pal.max_hp)}</div>
+        </>
+      ) : null}
+      <div className="pal-card-rows">
+        {doing ? <span>{doing}</span> : null}
+        {pal.guild ? <span title="guild">{pal.guild}</span> : null}
+        {pal.trainer ? <span title="owner">trained by {pal.trainer}</span> : null}
+        {pal.active === false ? <span>idle</span> : null}
+      </div>
+    </div>
+  )
+}
+
+function PalChips({ pals, emptyLabel, icons }) {
+  const [tip, setTip] = useState(null)
   if (!pals?.length) return <span className="muted">{emptyLabel}</span>
+
+  const show = (event, pal) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    setTip({ pal, anchor: { left: rect.left, top: rect.top, bottom: rect.bottom } })
+  }
+  const hide = () => setTip(null)
+  const toggle = (event, pal) => {
+    if (tip?.pal === pal) hide()
+    else show(event, pal)
+  }
+
   return (
     <div className="chips">
       {pals.map((pal, i) => (
-        <span className="pal" key={`${pal.id || pal.name}-${i}`} style={{ '--c': colorFor(pal.name) }}>
+        <span
+          className={`pal${tip?.pal === pal ? ' on' : ''}`}
+          key={`${pal.id || pal.name}-${i}`}
+          style={{ '--c': colorFor(pal.name) }}
+          tabIndex={0}
+          onMouseEnter={(event) => show(event, pal)}
+          onMouseLeave={hide}
+          onFocus={(event) => show(event, pal)}
+          onBlur={hide}
+          onClick={(event) => toggle(event, pal)}
+        >
+          <PalFace pal={pal} icons={icons} />
           {pal.name || 'Pal'}
           {pal.level != null ? <small>Lv {Math.round(pal.level)}</small> : null}
+          {tip?.pal === pal ? <PalCard pal={pal} icons={icons} anchor={tip.anchor} /> : null}
         </span>
       ))}
     </div>
@@ -29,6 +117,7 @@ export default function WorldPanel({ summary }) {
   const markers = mapMarkers(summary)
   const [selectedId, setSelectedId] = useState(null)
   const counts = world?.counts
+  const icons = new Set(summary?.pal_icons ?? [])
   const selected = markers.players.find((p) => p.id === selectedId)
   const hasWorld = Boolean(world?.available)
 
@@ -138,7 +227,7 @@ export default function WorldPanel({ summary }) {
                   <div className="meta">
                     {base.guild || 'unknown guild'} · X {base.map_x} Y {base.map_y} · {base.workers?.length ?? 0} workers
                   </div>
-                  <PalChips pals={base.workers} emptyLabel="no workers in range" />
+                  <PalChips pals={base.workers} emptyLabel="no workers in range" icons={icons} />
                 </div>
               ))}
             </div>
@@ -173,7 +262,7 @@ export default function WorldPanel({ summary }) {
                           </>
                         ) : '—'}
                       </td>
-                      <td><PalChips pals={player.party} emptyLabel="solo" /></td>
+                      <td><PalChips pals={player.party} emptyLabel="solo" icons={icons} /></td>
                     </tr>
                   ))}
                 </tbody>

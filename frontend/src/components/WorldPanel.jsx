@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import MapPlot from './MapPlot.jsx'
 import { apiUrl } from '../api.js'
-import { actionLabel, colorFor, healthPct, mapMarkers, speciesKey, worldStatus } from '../world.js'
+import { actionLabel, colorFor, emblemGrid, healthPct, mapMarkers, speciesKey, worldStatus } from '../world.js'
 
 function HealthBar({ hp, maxHp }) {
   const pct = healthPct(hp, maxHp)
@@ -10,9 +10,9 @@ function HealthBar({ hp, maxHp }) {
   return <div className={`bar hp${tone}`}><i style={{ width: `${pct}%` }} /></div>
 }
 
-// A portrait the operator dropped into PAL_ICON_DIR, or a monogram in the pal's
-// colour. Nothing is bundled: the game's art is Pocketpair's, so a missing file
-// is normal and the monogram carries the identity instead.
+// A portrait the operator dropped into PAL_ICON_DIR, or a generated sigil. No
+// artwork is bundled: the game's art is Pocketpair's, so a missing file is the
+// normal state and the sigil carries the identity instead.
 function PalFace({ pal, icons, size = 16 }) {
   const [broken, setBroken] = useState(false)
   const key = speciesKey(pal)
@@ -29,11 +29,34 @@ function PalFace({ pal, icons, size = 16 }) {
       />
     )
   }
-  const initial = (pal.name || '?').trim().charAt(0).toUpperCase() || '?'
+  const grid = emblemGrid(key || pal.name)
+  const cell = size / grid.length
   return (
-    <i className="pal-mono" style={{ '--c': colorFor(pal.name || '?'), width: size, height: size, fontSize: Math.round(size * 0.55) }}>
-      {initial}
-    </i>
+    <svg
+      className="pal-emblem"
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      aria-hidden="true"
+      style={{ '--c': colorFor(key || pal.name || '?') }}
+    >
+      <rect className="pal-emblem-bg" width={size} height={size} rx={size * 0.24} />
+      {grid.map((row, y) =>
+        row.map((on, x) =>
+          on ? (
+            <rect
+              key={`${x}-${y}`}
+              className="pal-emblem-ink"
+              x={x * cell + cell * 0.1}
+              y={y * cell + cell * 0.1}
+              width={cell * 0.8}
+              height={cell * 0.8}
+              rx={cell * 0.2}
+            />
+          ) : null,
+        ),
+      )}
+    </svg>
   )
 }
 

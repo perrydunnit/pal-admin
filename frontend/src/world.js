@@ -70,6 +70,20 @@ export function mapMarkers(summary) {
   }
 }
 
+// `BP_ActionSleep` -> "Sleep": the game reports blueprint names for what a pal
+// is doing, which is not something to show a person verbatim.
+export function actionLabel(action) {
+  const raw = String(action ?? '').replace(/^BP_Action/, '').replace(/_C$/, '')
+  if (!raw) return ''
+  const spaced = raw.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/_/g, ' ')
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+}
+
+// The species key an icon file would be named after, lowercased.
+export function speciesKey(pal) {
+  return String(pal?.species || pal?.name || '').toLowerCase()
+}
+
 export function worldStatus(world) {
   if (!world) return { tone: 'wait', text: 'Checking for world data…' }
   if (world.available) return { tone: 'on', text: `Live world snapshot · ${world.ts || ''}` }

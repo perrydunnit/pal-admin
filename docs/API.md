@@ -18,6 +18,7 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
 | POST | `/api/server-config` | write settings (local network only) |
 | POST | `/api/server-restart` | restart now or queue for an empty server (local network only) |
 | DELETE | `/api/server-restart` | cancel a queued restart (local network only) |
+| GET | `/api/pal-icon/{species}` | an operator-supplied pal portrait, or 404 |
 
 `month` defaults to the current month when omitted on `/api/summary`.
 
@@ -277,6 +278,19 @@ the row exists but the file is missing on disk.
 
 The live summary also carries `music: {count, bytes, limit_bytes}` so open
 browsers refresh the panel when someone else uploads.
+
+## GET /api/pal-icon/{species}
+
+Serves a portrait from `PAL_ICON_DIR` when the file exists, matched
+case-insensitively by species key (`Anubis`, `ElecPanda`,
+`FlowerDinosaur_Electric`), and `404 {"error": …}` when it does not. No artwork
+is bundled or proxied: the directory is whatever the operator put there.
+`Cache-Control: public, max-age=3600`.
+
+`/api/summary` carries `pal_icons`, the lowercased species keys that have a
+portrait, so the UI requests only the ones that exist. Every pal in `world`
+carries a `species` derived from the game's `Class` (`BP_Anubis_MiddleBoss_C` →
+`Anubis`), which is the key to use for both.
 
 ## Server config
 

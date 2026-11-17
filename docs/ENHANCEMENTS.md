@@ -118,6 +118,10 @@ blob/disk comparisons diverge.
   snapshot after enabling the flag is worth eyeballing.
 - **No map artwork.** The Palpagos texture is Pocketpair's; the map is a
   schematic grid with correctly projected dots and an external link, by choice.
+- **No pal artwork either, only a directory to put it in.** `PAL_ICON_DIR` is
+  served by `/api/pal-icon/<species>` and nothing is bundled or hotlinked; a
+  missing file is a coloured monogram, which is the normal state. Keep it that
+  way in the repo: an icon set is the operator's call, on their instance.
 - **The config panel cannot create settings the game does not read.** Keys the
   image's template omits (`MaxBuildingLimitNumPerPlayer`, `FishingDifficultyRate`,
   `bAllowEnemyCampSpawnNearBaseCamp`, `bEnableFastTravelOnlyBaseCamp`) do appear

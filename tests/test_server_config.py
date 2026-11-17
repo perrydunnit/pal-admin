@@ -10,38 +10,22 @@ scripts/verify.sh runs it.
 
 import datetime as dt
 import os
-import shutil
 import sys
-import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import palconfig  # noqa: E402
+from tests.app_env import TMP, import_app  # noqa: E402
 
-TMP = tempfile.mkdtemp(prefix="paladmin-test-")
-# Set before importing app: it reads its configuration and starts the database at
-# import time.
-os.environ["PALADMIN_NO_BACKGROUND"] = "1"
-os.environ["DB_PATH"] = os.path.join(TMP, "test.db")
-os.environ["MUSIC_DIR"] = os.path.join(TMP, "music")
-os.environ["PAL_SETTINGS_FILE"] = os.path.join(TMP, "PalWorldSettings.ini")
-os.environ["LAN_CIDRS"] = "192.168.0.0/24"
+# flask and docker are not installed everywhere the gate runs; the pure tests
+# below always run, the rest skip instead of failing the whole suite.
+paladmin, APP_IMPORT_ERROR = import_app()
 
-# The catalogue tests need nothing but the standard library. Everything that
-# touches the app needs flask and docker, which the gate's interpreter may not
-# have; those classes skip instead of failing the whole run.
-try:
-    import app as paladmin
-    APP_IMPORT_ERROR = None
-except Exception as exc:  # noqa: BLE001 - any import failure means "not runnable"
-    paladmin = None
-    APP_IMPORT_ERROR = str(exc)
+LAN = {"REMOTE_ADDR": "192.168.0.42"}
 
 needs_app = unittest.skipUnless(
     paladmin is not None, f"app.py is not importable here: {APP_IMPORT_ERROR}")
-
-LAN = {"REMOTE_ADDR": "192.168.0.42"}
 
 
 class CatalogueTests(unittest.TestCase):
@@ -273,17 +257,6 @@ class RestartQueueTests(unittest.TestCase):
         paladmin.check_restart_queue(0, 214)         # never went down: uptime tracks elapsed
         with paladmin.db() as conn:
             self.assertIsNotNone(paladmin._state(conn, "restart_issued"))
-
-
-def tearDownModule():
-    # The sqlite connections in app.py are committed but not closed, and Windows
-    # keeps the database file locked until they are collected.
-    import gc
-    import warnings
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", ResourceWarning)
-        gc.collect()
-    shutil.rmtree(TMP, ignore_errors=True)
 
 
 if __name__ == "__main__":

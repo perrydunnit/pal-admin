@@ -53,11 +53,37 @@ the first time someone plays it.
 
 See [docs/API.md](docs/API.md#music-library) for the endpoints.
 
+## Server config
+
+The **Server config** panel lists every `PalWorldSettings.ini` key the game
+ships, with the value in the file, the game's default when the file has none,
+and a one-line explanation of what it does. Saving writes those keys into the
+game's settings file; a restart makes them live.
+
+- reading is open to anyone who can see the page; **saving and both restart
+  buttons work only from the local network** (`LAN_CIDRS`, `192.168.0.0/24`).
+  Anywhere else gets the read-only view, and a 403 with the address that asked.
+- restarts go through the game's own `shutdown` endpoint — it saves the world
+  and exits, and the container's `restart: unless-stopped` policy brings it
+  back. Nothing here calls Docker's restart API.
+- "Queue for empty" waits for `RESTART_IDLE_SECONDS` (5 minutes) of a completely
+  empty server, so a player who drops for a moment is not caught mid-session.
+- two keys stay locked: `AdminPassword` and the REST API pair. The dashboard
+  authenticates and polls with them, so breaking them from the UI would take the
+  page down with it.
+
+The panel only works while the game image leaves `PalWorldSettings.ini` alone:
+`DISABLE_GENERATE_SETTINGS=true` must be set in the *game* stack's `.env`,
+otherwise the image rewrites the file from its own environment at every boot.
+The panel says so in a banner when that is missing. See
+[docs/PALWORLD-SERVER.md](docs/PALWORLD-SERVER.md#changing-settings).
+
 ## Repository layout
 
 ```
 app.py                 Flask app: collector threads, JSON + SSE endpoints
 musiclib.py            audio upload rules (pure, unit tested)
+palconfig.py           server settings catalogue, ini parsing and validation
 tests/                 stdlib unittest for the pure backend helpers
 frontend/              React UI (Vite): components, styles, unit tests
 frontend/dist/         build output (gitignored; built by Docker)
@@ -200,6 +226,14 @@ HTTP basic auth at Traefik, user `admin`, using the same password as the game's
 
 To change the password: update `ADMIN_PASSWORD` in `.env`, regenerate the
 bcrypt hash, and replace the value in the `paladmin-auth` label.
+
+The app adds one gate of its own on top of basic auth: anything that changes the
+game — saving settings, restarting it, cancelling a queued restart — is refused
+unless the request came from `LAN_CIDRS`. The client address is taken from
+`X-Forwarded-For` only when the socket peer is not already inside the LAN, and
+from the *last* hop, which is the one Traefik wrote; a forged header therefore
+cannot place a caller on the local network. Anything the host or the router
+itself sends is seen as `192.168.0.1` and counts as local, by design.
 
 ## Operations
 

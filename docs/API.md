@@ -14,6 +14,10 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
 | GET | `/api/timeline?month=YYYY-MM` | continuous month timeline |
 | GET | `/api/day?date=YYYY-MM-DD` | one day's sessions |
 | GET | `/api/range?start=…&end=…` | per-day sessions for a range |
+| GET | `/api/server-config` | every game setting, its value and its default |
+| POST | `/api/server-config` | write settings (local network only) |
+| POST | `/api/server-restart` | restart now or queue for an empty server (local network only) |
+| DELETE | `/api/server-restart` | cancel a queued restart (local network only) |
 
 `month` defaults to the current month when omitted on `/api/summary`.
 
@@ -273,6 +277,101 @@ the row exists but the file is missing on disk.
 
 The live summary also carries `music: {count, bytes, limit_bytes}` so open
 browsers refresh the panel when someone else uploads.
+
+## Server config
+
+`PalWorldSettings.ini` is read from `PAL_SETTINGS_FILE` (default
+`/palconfig/PalWorldSettings.ini`, the game stack's settings directory mounted
+in `compose.yaml`). Reading is allowed from anywhere the page is reachable;
+every write is refused unless the request came from `LAN_CIDRS`.
+
+### GET /api/server-config
+
+```jsonc
+{
+  "available": true,             // the settings file is mounted and readable
+  "writable": true,
+  "editable": true,              // writable *and* the caller is on the LAN
+  "client_ip": "192.168.0.42",
+  "lan": "192.168.0.0/24",
+  "file": "/palconfig/PalWorldSettings.ini",
+  "warnings": [],                // e.g. the image would regenerate the file
+  "locked_reason": "Managed from the stack's .env (see docs/PALWORLD-SERVER.md).",
+  "players_online": 0,           // last collected metric, null before the first poll
+  "players_at": "2026-11-16T22:51:57+00:00",
+  "restart": {
+    "queued": { "at": "…", "by": "192.168.0.42", "message": "…" },
+    "issued": null,              // set while the game is coming back
+    "empty_since": null,         // when the server was first seen empty
+    "error": null,
+    "idle_seconds": 300,
+    "countdown": 30
+  },
+  "groups": [
+    {
+      "name": "Survival & rates",
+      "settings": [
+        {
+          "key": "ExpRate",
+          "group": "Survival & rates",
+          "kind": "float",        // bool | int | float | string | enum | list | raw
+          "description": "Experience multiplier for every player.",
+          "choices": [],          // enum and list values
+          "tuple": false,         // lists written as (a,b) instead of "a,b"
+          "locked": false,
+          "warning": null,
+          "secret": false,
+          "default": "1",
+          "value": "2.5",         // null for secrets, or when the file omits it
+          "is_set": null,         // secrets only: is a value present at all
+          "is_default": false,
+          "live": "1",            // what the running game reports
+          "pending": true          // the file and the game disagree: restart needed
+        }
+      ]
+    }
+  ]
+}
+```
+
+`value` may be `null` while `default` is not: the key is absent from the file
+and the game is using its own default. `AdminPassword` and `ServerPassword` are
+never sent — `is_set` says whether one exists.
+
+### POST /api/server-config
+
+```jsonc
+{ "changes": { "ExpRate": "2.5", "Difficulty": "Hard" } }
+```
+
+Values are validated per type (booleans accept `true/false/yes/no/1/0`, enums
+accept any case, free text may not contain a double quote or a line break,
+because the ini has no escape syntax). All or nothing: one bad value rejects the
+whole request with `400 {"error": "ExpRate must be a number"}`. A successful
+save rewrites the file atomically, keeps the previous version beside it as
+`PalWorldSettings.ini.bak`, and returns the same payload as `GET` with
+`saved: ["ExpRate"]` added.
+
+`403` when the caller is not on `LAN_CIDRS`, `500` when the file cannot be
+written. Locked keys (`AdminPassword`, `RESTAPIEnabled`, `RESTAPIPort`) and
+unknown keys are rejected with `400`.
+
+### POST /api/server-restart
+
+```jsonc
+{ "mode": "queue" }        // or "now"
+```
+
+`now` announces the message and calls the game's own `shutdown` endpoint, which
+saves the world and exits; the container's `restart: unless-stopped` policy
+brings it back. `queue` stores the request and the collector fires it after
+`RESTART_IDLE_SECONDS` of a server with `currentplayernum == 0`. Returns the
+`GET` payload; `502` when the game refuses the shutdown. `403` off the LAN.
+
+### DELETE /api/server-restart
+
+Clears a queued restart (`cancelled: true|false` in the response). `403` off the
+LAN.
 
 ## Errors
 

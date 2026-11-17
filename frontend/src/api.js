@@ -88,3 +88,31 @@ export async function deleteMusic(id) {
   if (!res.ok) throw new Error(`HTTP ${res.status}`)
   return res.json()
 }
+
+async function sendJSON(url, method, body) {
+  const res = await fetch(url, {
+    method,
+    headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
+  return data
+}
+
+export async function fetchServerConfig() {
+  return fetchJSON('/api/server-config')
+}
+
+// Only reachable from the LAN; the server answers 403 with the reason otherwise.
+export async function saveServerConfig(changes) {
+  return sendJSON('/api/server-config', 'POST', { changes })
+}
+
+export async function restartServer(mode) {
+  return sendJSON('/api/server-restart', 'POST', { mode })
+}
+
+export async function cancelRestart() {
+  return sendJSON('/api/server-restart', 'DELETE')
+}

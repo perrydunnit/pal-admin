@@ -67,8 +67,20 @@ if [ -z "$PY" ]; then
 elif [ ! -d tests ]; then
   skip "python tests (no tests/ directory)"
 else
+  # tests/test_server_config.py imports app.py, which needs flask and docker.
+  # Prefer an interpreter that can actually import them; the compile check above
+  # only proves the syntax.
+  TEST_PY="$PY"
+  for candidate in "$PY" "$(command -v python3 || true)" "$(command -v python || true)"; do
+    [ -n "$candidate" ] || continue
+    if "$candidate" -c 'import flask, docker' >/dev/null 2>&1; then TEST_PY="$candidate"; break; fi
+  done
+  if ! "$TEST_PY" -c 'import flask, docker' >/dev/null 2>&1; then
+    echo "       (no interpreter has flask+docker; the app-level tests will skip)"
+  fi
+
   tmp=$(mktemp -d)
-  if "$PY" -m unittest discover -s tests -p 'test_*.py' >"$tmp/out" 2>&1; then
+  if "$TEST_PY" -m unittest discover -s tests -p 'test_*.py' >"$tmp/out" 2>&1; then
     pass "python unit tests ($(grep -oE 'Ran [0-9]+ tests?' "$tmp/out" | head -1))"
   else
     bad "python unit tests: $(tail -5 "$tmp/out" | tr '\n' ' ')"

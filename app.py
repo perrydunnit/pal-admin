@@ -10,9 +10,11 @@ Serves a single-page dashboard with player stats and a presence calendar.
 import calendar as calmod
 import datetime as dt
 import hashlib
+import ipaddress
 import json
 import os
 import re
+import shutil
 import sqlite3
 import tempfile
 import threading
@@ -24,6 +26,7 @@ import requests
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
 import musiclib
+import palconfig
 
 TZ = ZoneInfo(os.environ.get("TZ", "UTC"))
 PAL_API = os.environ.get("PAL_API", "http://palworld-server:8212").rstrip("/")
@@ -47,6 +50,20 @@ INFO_REFRESH_SECONDS = int(os.environ.get("INFO_REFRESH_SECONDS", "1800"))
 MAX_STREAMS = int(os.environ.get("MAX_STREAMS", "4"))
 GAME_DATA_SECONDS = int(os.environ.get("GAME_DATA_SECONDS", "20"))
 GAME_DATA_RETRY_SECONDS = int(os.environ.get("GAME_DATA_RETRY_SECONDS", "300"))
+
+# The game's own settings file, mounted read-write from the game stack. Editing
+# it is the only way to change a setting without recreating the container: the
+# image writes it from .env once, at boot, so a plain restart keeps our values.
+PAL_SETTINGS_FILE = os.environ.get("PAL_SETTINGS_FILE", "/palconfig/PalWorldSettings.ini")
+# Only these addresses may change settings or restart the server. Everyone who
+# can reach the page still sees the values.
+LAN_CIDRS = os.environ.get("LAN_CIDRS", "192.168.0.0/24")
+# A queued restart waits for this many seconds of continuous emptiness, so a
+# player who drops for a moment cannot be caught mid-session.
+RESTART_IDLE_SECONDS = int(os.environ.get("RESTART_IDLE_SECONDS", "300"))
+# Countdown the game announces for a restart, in seconds.
+RESTART_COUNTDOWN = int(os.environ.get("RESTART_COUNTDOWN", "30"))
+DEFAULT_RESTART_MESSAGE = "Server restarting to apply new settings."
 
 # Palpagos map calibration, from the community map pipeline (world units are
 # Unreal centimetres). bounds = (maxX, maxY, minX, minY); the map axis is
@@ -143,6 +160,13 @@ CREATE TABLE IF NOT EXISTS chat (
 );
 
 CREATE TABLE IF NOT EXISTS server (
+    key         TEXT PRIMARY KEY,
+    value       TEXT
+);
+
+-- Admin actions that must survive a container restart, such as a queued
+-- server restart. Values are JSON.
+CREATE TABLE IF NOT EXISTS app_state (
     key         TEXT PRIMARY KEY,
     value       TEXT
 );
@@ -556,6 +580,10 @@ def poll_api():
             ),
         )
     publish()
+    try:
+        check_restart_queue(metrics.get("currentplayernum"), metrics.get("uptime"))
+    except Exception as exc:
+        app.logger.exception("restart watch failed: %s", exc)
 
 
 def collector():
@@ -822,6 +850,338 @@ def world_loop():
             app.logger.exception("world poll failed: %s", exc)
             ok = False
         time.sleep(GAME_DATA_SECONDS if ok else GAME_DATA_RETRY_SECONDS)
+
+
+# -------------------------------------------------------------- server config
+
+_config_lock = threading.Lock()
+_generation_cache = {"at": 0.0, "value": None}
+
+
+def _lan_networks():
+    networks = []
+    for cidr in re.split(r"[,\s]+", LAN_CIDRS.strip()):
+        if not cidr:
+            continue
+        try:
+            networks.append(ipaddress.ip_network(cidr, strict=False))
+        except ValueError:
+            app.logger.warning("ignoring unusable LAN_CIDRS entry: %s", cidr)
+    return networks
+
+
+def _valid_ip(text):
+    try:
+        ipaddress.ip_address(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _ip_inside(text, networks):
+    if not _valid_ip(text):
+        return False
+    address = ipaddress.ip_address(text)
+    return any(address in network for network in networks)
+
+
+def resolve_client_ip(remote, forwarded, networks):
+    """The address a request really came from.
+
+    Behind Traefik `remote_addr` is the proxy on the Docker network, so the
+    client is in `X-Forwarded-For`. The *last* hop is the one our own proxy
+    appended, so a header a caller forged can never put them inside the LAN.
+    """
+    remote = (remote or "").strip()
+    if _ip_inside(remote, networks):
+        return remote
+    hops = [hop.strip() for hop in (forwarded or "").split(",") if hop.strip()]
+    for hop in reversed(hops):
+        if _valid_ip(hop):
+            return hop
+    return remote
+
+
+def client_context():
+    """(client ip, may this client change the server)."""
+    networks = _lan_networks()
+    ip = resolve_client_ip(
+        request.remote_addr, request.headers.get("X-Forwarded-For", ""), networks)
+    return ip, _ip_inside(ip, networks)
+
+
+def _read_settings_text():
+    try:
+        with open(PAL_SETTINGS_FILE, encoding="utf-8") as handle:
+            return handle.read()
+    except FileNotFoundError:
+        return None
+
+
+def _write_settings(changes):
+    """Apply validated tokens to the ini, keeping a copy of the previous file."""
+    text = _read_settings_text()
+    values = palconfig.parse(text) if text is not None else dict(palconfig.DEFAULTS)
+    values.update(changes)
+    body = palconfig.render(values)
+    directory = os.path.dirname(PAL_SETTINGS_FILE) or "."
+    # Never create it: a missing directory means the game stack is not mounted,
+    # and writing into the container's own filesystem would look like success.
+    if not os.path.isdir(directory):
+        raise OSError(f"{directory} is not mounted")
+    temporary = PAL_SETTINGS_FILE + ".tmp"
+    with open(temporary, "w", encoding="utf-8", newline="\n") as handle:
+        handle.write(body)
+    os.chmod(temporary, 0o644)
+    if text is not None:
+        shutil.copy2(PAL_SETTINGS_FILE, PAL_SETTINGS_FILE + ".bak")
+    os.replace(temporary, PAL_SETTINGS_FILE)
+    return values
+
+
+def _live_settings():
+    """Settings the running game is using, or None when it cannot be reached."""
+    try:
+        data = requests.get(
+            f"{PAL_API}/v1/api/settings", auth=(ADMIN_USER, ADMIN_PASSWORD), timeout=5).json()
+    except Exception as exc:
+        app.logger.info("live settings unavailable: %s", exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    # The API reports this one with a lower-case first letter.
+    if "autoSaveSpan" in data and "AutoSaveSpan" not in data:
+        data["AutoSaveSpan"] = data["autoSaveSpan"]
+    return data
+
+
+def _live_token(entry, value):
+    """A live JSON value in the same token form the ini stores."""
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "True" if value else "False"
+    if isinstance(value, (int, float)):
+        return f"{float(value):.6f}" if entry["kind"] == "float" else str(value)
+    if isinstance(value, (list, tuple)):
+        items = ",".join(str(item) for item in value)
+        return f"({items})" if entry.get("tuple") else f'"{items}"'
+    if entry["kind"] in ("enum", "raw"):
+        return str(value)
+    return f'"{value}"'
+
+
+def _regenerated_from_env():
+    """True when the image would overwrite our edits at the next boot."""
+    with _config_lock:
+        if time.monotonic() - _generation_cache["at"] < 60:
+            return _generation_cache["value"]
+    value = None
+    try:
+        container = docker.from_env().containers.get(PAL_CONTAINER)
+        env = container.attrs.get("Config", {}).get("Env") or []
+        flag = next((item.split("=", 1)[1] for item in env
+                     if item.upper().startswith("DISABLE_GENERATE_SETTINGS=")), "")
+        value = flag.strip().lower() != "true"
+    except Exception as exc:
+        app.logger.info("cannot read the game container environment: %s", exc)
+    with _config_lock:
+        _generation_cache.update(at=time.monotonic(), value=value)
+    return value
+
+
+def _state(conn, key):
+    row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    if not row or row["value"] is None:
+        return None
+    try:
+        return json.loads(row["value"])
+    except ValueError:
+        return None
+
+
+def _set_state(conn, key, value):
+    if value is None:
+        conn.execute("DELETE FROM app_state WHERE key = ?", (key,))
+    else:
+        conn.execute(
+            "INSERT OR REPLACE INTO app_state(key, value) VALUES(?, ?)", (key, json.dumps(value)))
+
+
+def restart_payload():
+    with db() as conn:
+        queued = _state(conn, "restart_queue")
+        issued = _state(conn, "restart_issued")
+        empty_since = _state(conn, "restart_empty_since")
+        error = _state(conn, "restart_error")
+    return {
+        "queued": queued,
+        "issued": issued,
+        "empty_since": empty_since,
+        "error": error,
+        "idle_seconds": RESTART_IDLE_SECONDS,
+        "countdown": RESTART_COUNTDOWN,
+    }
+
+
+def config_payload():
+    """Everything the settings panel needs, including why it may be read-only."""
+    ip, lan = client_context()
+    text = _read_settings_text()
+    available = text is not None
+    values = palconfig.parse(text) if available else {}
+    known = palconfig.by_key()
+    catalog = palconfig.catalog([key for key in values if key not in known])
+    live = _live_settings() if available else None
+    directory = os.path.dirname(PAL_SETTINGS_FILE) or "."
+    writable = available and (
+        os.access(PAL_SETTINGS_FILE, os.W_OK) or os.access(directory, os.W_OK))
+    regenerated = _regenerated_from_env()
+
+    warnings = []
+    if not available:
+        warnings.append(
+            f"{PAL_SETTINGS_FILE} is not mounted, so only the game's defaults are shown.")
+    elif not writable:
+        warnings.append("The settings file is not writable from this container.")
+    if regenerated:
+        warnings.append(
+            "The game image rewrites PalWorldSettings.ini from the stack's .env at every "
+            "boot (DISABLE_GENERATE_SETTINGS is not true), so saved values would be lost "
+            "when the container is recreated.")
+
+    rows = []
+    for entry in catalog:
+        token = values.get(entry["key"])
+        secret = bool(entry.get("secret"))
+        live_token = _live_token(entry, live.get(entry["key"])) if live else None
+        rows.append({
+            "key": entry["key"],
+            "group": entry["group"],
+            "kind": entry["kind"],
+            "description": entry["description"],
+            "choices": list(entry.get("choices") or []),
+            "tuple": bool(entry.get("tuple")),
+            "locked": bool(entry.get("locked")),
+            "warning": entry.get("warning"),
+            "secret": secret,
+            "default": palconfig.friendly(entry, entry.get("default")),
+            "value": None if secret else (
+                palconfig.friendly(entry, token) if token is not None else None),
+            "is_set": bool(palconfig.friendly(entry, token)) if secret else None,
+            "is_default": token is None or palconfig.same_value(
+                entry, token, entry.get("default")),
+            "live": None if secret or live_token is None else palconfig.friendly(
+                entry, live_token),
+            "pending": bool(
+                token is not None and live_token is not None
+                and not palconfig.same_value(entry, token, live_token)),
+        })
+
+    with db() as conn:
+        metrics_row = conn.execute(
+            "SELECT playernum, ts FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
+    restart = restart_payload()
+
+    return {
+        "available": available,
+        "writable": writable,
+        "editable": available and writable and lan,
+        "client_ip": ip,
+        "lan": LAN_CIDRS,
+        "file": PAL_SETTINGS_FILE,
+        "warnings": warnings,
+        "groups": [
+            {"name": name, "settings": [row for row in rows if row["group"] == name]}
+            for name in palconfig.GROUPS
+            if any(row["group"] == name for row in rows)
+        ],
+        "restart": restart,
+        "players_online": metrics_row["playernum"] if metrics_row else None,
+        "players_at": metrics_row["ts"] if metrics_row else None,
+        "locked_reason": palconfig.LOCKED_REASON,
+    }
+
+
+def perform_restart(message, countdown, by, mode, uptime=None):
+    """Ask the game to shut down cleanly; Docker's restart policy brings it back."""
+    auth = (ADMIN_USER, ADMIN_PASSWORD)
+    if uptime is None:
+        with db() as conn:
+            row = conn.execute("SELECT uptime FROM metrics ORDER BY ts DESC LIMIT 1").fetchone()
+            uptime = row["uptime"] if row else None
+    try:
+        requests.post(f"{PAL_API}/v1/api/announce", auth=auth,
+                      json={"message": message}, timeout=10)
+    except Exception as exc:
+        app.logger.warning("restart announcement failed: %s", exc)
+    response = requests.post(
+        f"{PAL_API}/v1/api/shutdown", auth=auth,
+        json={"waittime": max(1, int(countdown)), "message": message}, timeout=15)
+    response.raise_for_status()
+    with _db_lock, db() as conn:
+        _set_state(conn, "restart_issued", {
+            "at": iso(now_utc()), "by": by, "mode": mode,
+            "message": message, "uptime": uptime,
+        })
+        _set_state(conn, "restart_queue", None)
+        _set_state(conn, "restart_empty_since", None)
+        _set_state(conn, "restart_error", None)
+    publish()
+    app.logger.info("restart requested by %s (%s): %s", by, mode, message)
+
+
+def check_restart_queue(playernum, uptime):
+    """Fire a queued restart once the server has been empty long enough."""
+    now = now_utc()
+    act = None
+    with _db_lock, db() as conn:
+        issued = _state(conn, "restart_issued")
+        if issued:
+            # A restarted game reports less uptime than the time that has passed
+            # since the request, whatever the box was up to beforehand.
+            elapsed = (now - parse_iso(issued["at"])).total_seconds()
+            started_again = uptime is not None and uptime + 30 < elapsed
+            if started_again or elapsed > 900:
+                _set_state(conn, "restart_issued", None)
+                publish()
+            return
+        queued = _state(conn, "restart_queue")
+        if not queued:
+            if _state(conn, "restart_empty_since"):
+                _set_state(conn, "restart_empty_since", None)
+                publish()
+            return
+        if playernum is None:
+            return
+        if playernum > 0:
+            if _state(conn, "restart_empty_since"):
+                _set_state(conn, "restart_empty_since", None)
+                publish()
+            return
+        empty_since = _state(conn, "restart_empty_since")
+        if not empty_since:
+            _set_state(conn, "restart_empty_since", iso(now))
+            publish()
+            return
+        if (now - parse_iso(empty_since)).total_seconds() < RESTART_IDLE_SECONDS:
+            return
+        retry_after = queued.get("retry_after")
+        if retry_after and now < parse_iso(retry_after):
+            return
+        act = queued
+    if act is None:
+        return
+    try:
+        perform_restart(act.get("message") or DEFAULT_RESTART_MESSAGE,
+                        RESTART_COUNTDOWN, act.get("by"), "queue", uptime)
+    except Exception as exc:
+        app.logger.warning("queued restart failed: %s", exc)
+        with _db_lock, db() as conn:
+            act["retry_after"] = iso(now_utc() + dt.timedelta(minutes=5))
+            _set_state(conn, "restart_queue", act)
+            _set_state(conn, "restart_error", str(exc)[:200])
+        publish()
 
 
 # ------------------------------------------------------------------- queries
@@ -1348,6 +1708,103 @@ def api_music_file(music_id):
                      download_name=row["name"] + row["ext"])
 
 
+@app.route("/api/server-config")
+def api_server_config():
+    return jsonify(config_payload())
+
+
+@app.route("/api/server-config", methods=["POST"])
+def api_server_config_save():
+    ip, lan = client_context()
+    if not lan:
+        return jsonify(error=(
+            f"settings can only be changed from the local network ({LAN_CIDRS}); "
+            f"this request came from {ip}")), 403
+
+    # A JSON body is required, which also means a cross-site form post cannot
+    # reach this route: no CORS headers are served, and a simple request cannot
+    # carry this content type.
+    body = request.get_json(silent=True) or {}
+    changes = body.get("changes")
+    if not isinstance(changes, dict) or not changes:
+        return jsonify(error="no changes supplied"), 400
+
+    text = _read_settings_text()
+    values = palconfig.parse(text) if text is not None else dict(palconfig.DEFAULTS)
+    catalog = palconfig.by_key()
+    applied = {}
+    for key, raw in changes.items():
+        entry = catalog.get(key)
+        if entry is None:
+            return jsonify(error=f"unknown setting: {key}"), 400
+        if entry.get("locked"):
+            return jsonify(error=f"{key} is {palconfig.LOCKED_REASON.lower()}"), 400
+        try:
+            token = palconfig.coerce(entry, raw)
+        except ValueError as exc:
+            return jsonify(error=str(exc)), 400
+        if not palconfig.same_value(entry, token, values.get(key)):
+            applied[key] = token
+
+    if applied:
+        try:
+            with _config_lock:
+                _write_settings(applied)
+        except OSError as exc:
+            return jsonify(error=f"could not write {PAL_SETTINGS_FILE}: {exc}"), 500
+        app.logger.info("%s changed %s", ip, ", ".join(sorted(applied)))
+
+    payload = config_payload()
+    payload["saved"] = sorted(applied)
+    return jsonify(payload)
+
+
+@app.route("/api/server-restart", methods=["POST"])
+def api_server_restart():
+    ip, lan = client_context()
+    if not lan:
+        return jsonify(error=(
+            f"only the local network ({LAN_CIDRS}) may restart the server; "
+            f"this request came from {ip}")), 403
+
+    body = request.get_json(silent=True) or {}
+    mode = str(body.get("mode") or "").strip()
+    message = str(body.get("message") or "").strip() or DEFAULT_RESTART_MESSAGE
+    if mode == "now":
+        try:
+            perform_restart(message, RESTART_COUNTDOWN, ip, "now")
+        except Exception as exc:
+            return jsonify(error=f"the game did not accept the restart: {exc}"), 502
+    elif mode == "queue":
+        with _db_lock, db() as conn:
+            _set_state(conn, "restart_queue", {
+                "at": iso(now_utc()), "by": ip, "message": message})
+            _set_state(conn, "restart_empty_since", None)
+            _set_state(conn, "restart_error", None)
+        publish()
+    else:
+        return jsonify(error="mode must be 'queue' or 'now'"), 400
+    return jsonify(config_payload())
+
+
+@app.route("/api/server-restart", methods=["DELETE"])
+def api_server_restart_cancel():
+    ip, lan = client_context()
+    if not lan:
+        return jsonify(error=(
+            f"only the local network ({LAN_CIDRS}) may change the restart queue; "
+            f"this request came from {ip}")), 403
+    with _db_lock, db() as conn:
+        cancelled = _state(conn, "restart_queue") is not None
+        _set_state(conn, "restart_queue", None)
+        _set_state(conn, "restart_empty_since", None)
+        _set_state(conn, "restart_error", None)
+    publish()
+    payload = config_payload()
+    payload["cancelled"] = cancelled
+    return jsonify(payload)
+
+
 @app.route("/")
 def index():
     return send_from_directory(app.static_folder, "index.html")
@@ -1364,10 +1821,13 @@ def cache_headers(response):
 
 
 # Started at import so it also runs under a WSGI server (single worker only).
+# PALADMIN_NO_BACKGROUND is a test seam: the unit tests import this module and
+# must not leave a collector polling a server that is not there.
 init_db()
-threading.Thread(target=follow_logs, daemon=True).start()
-threading.Thread(target=collector, daemon=True).start()
-threading.Thread(target=world_loop, daemon=True).start()
+if os.environ.get("PALADMIN_NO_BACKGROUND") != "1":
+    threading.Thread(target=follow_logs, daemon=True).start()
+    threading.Thread(target=collector, daemon=True).start()
+    threading.Thread(target=world_loop, daemon=True).start()
 
 
 if __name__ == "__main__":

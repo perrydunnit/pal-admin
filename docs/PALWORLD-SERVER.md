@@ -31,9 +31,14 @@ port, behind basic auth.
 
 ## Settings that matter here
 
-Read from `/opt/stacks/palworld/palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini`,
-which the container regenerates from `.env` on every boot — **changes must go in
-`.env`**, hand-edits are lost on restart.
+Read from `/opt/stacks/palworld/palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini`.
+
+The image writes that file from its `.env` at **every boot**
+(`/home/steam/server/compile-settings.sh`), which is why hand edits used to be
+lost on restart. The dashboard's config panel edits the file in place, so this
+stack sets `DISABLE_GENERATE_SETTINGS=true` in the game's `.env` to stop the
+regeneration. With that set, the ini is the source of truth and `.env` only
+holds container-level settings (backups, updates, autopause, ports, `TZ`).
 
 Required for this dashboard:
 
@@ -62,6 +67,46 @@ TZ=America/Denver
 If `ENABLE_PLAYER_LOGGING` is turned off, history stops accruing: the app still
 shows live state from the REST API, but the log regexes find nothing and
 `sessions` will only contain poll-derived rows. The chat panel goes quiet too.
+
+## Changing settings
+
+Two ways, and they differ in what survives:
+
+| Path | Used for |
+|---|---|
+| Dashboard → **Server config** → save | every `PalWorldSettings.ini` key; applied on the next restart |
+| `/opt/stacks/palworld/.env` → `docker compose up -d --force-recreate` | container behaviour: backups, updates, autopause, ports, `TZ` |
+
+The panel writes the ini atomically (temp file + rename) and keeps the previous
+version as `PalWorldSettings.ini.bak` beside it. It reads the running values from
+the game's `/v1/api/settings`, so a key that is saved but not yet in effect is
+marked as pending instead of pretending it is live.
+
+Order of operations the first time, on the host:
+
+```bash
+cd /opt/stacks/palworld
+# one line, appended if missing
+grep -q '^DISABLE_GENERATE_SETTINGS=' .env \
+  || echo 'DISABLE_GENERATE_SETTINGS=true' >> .env
+docker compose stop            # never `docker restart`: it can SIGKILL mid-save
+docker compose up -d           # recreates, so the new env var takes effect
+```
+
+After that, saves from the dashboard only need the restart the panel offers,
+because nothing rewrites the file any more. A container **recreate** would still
+pick up the same ini, since `DISABLE_GENERATE_SETTINGS` is in `.env` too.
+
+Verify from the host:
+
+```bash
+docker exec palworld-server env | grep DISABLE_GENERATE_SETTINGS
+tail -c 200 palworld/Pal/Saved/Config/LinuxServer/PalWorldSettings.ini
+```
+
+**Do not** delete `DISABLE_GENERATE_SETTINGS` without also removing the panel
+from service: the next boot would silently reset every setting to the values in
+`.env`.
 
 ## What the REST API exposes
 

@@ -179,9 +179,9 @@ Hovering a pal chip — a base worker or a party pal — opens a card with its
 level, HP, what it is doing (`BP_ActionSleep` is shown as “Sleep”), its guild
 and its trainer. Each chip also carries a small portrait tile.
 
-By default that tile is a coloured monogram, because **no artwork ships with
-this repo** and none is fetched from anywhere: the pal images are Pocketpair's.
-If you want real portraits, drop image files into `PAL_ICON_DIR` (default
+By default there is **no** portrait: nothing is bundled, nothing is fetched and
+nothing is drawn in its place, because the pal images are Pocketpair's. If you
+want real portraits, drop image files into `PAL_ICON_DIR` (default
 `/data/palicons`, i.e. `data/palicons` in the stack directory, so they are
 covered by the same backups) and they appear on the next page load:
 

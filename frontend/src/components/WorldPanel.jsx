@@ -10,30 +10,23 @@ function HealthBar({ hp, maxHp }) {
   return <div className={`bar hp${tone}`}><i style={{ width: `${pct}%` }} /></div>
 }
 
-// A portrait the operator dropped into PAL_ICON_DIR, or a monogram in the pal's
-// colour. Nothing is bundled: the game's art is Pocketpair's, so a missing file
-// is normal and the monogram carries the identity instead.
+// The portrait, when the operator supplied one in PAL_ICON_DIR. Nothing is
+// drawn in its place: no artwork ships and none is generated, so a pal without
+// a portrait is simply its name in the list.
 function PalFace({ pal, icons, size = 16 }) {
   const [broken, setBroken] = useState(false)
   const key = speciesKey(pal)
-  if (key && icons.has(key) && !broken) {
-    return (
-      <img
-        className="pal-icon"
-        src={apiUrl(`/api/pal-icon/${encodeURIComponent(key)}`)}
-        alt=""
-        width={size}
-        height={size}
-        loading="lazy"
-        onError={() => setBroken(true)}
-      />
-    )
-  }
-  const initial = (pal.name || '?').trim().charAt(0).toUpperCase() || '?'
+  if (!key || !icons.has(key) || broken) return null
   return (
-    <i className="pal-mono" style={{ '--c': colorFor(pal.name || '?'), width: size, height: size, fontSize: Math.round(size * 0.55) }}>
-      {initial}
-    </i>
+    <img
+      className="pal-icon"
+      src={apiUrl(`/api/pal-icon/${encodeURIComponent(key)}`)}
+      alt=""
+      width={size}
+      height={size}
+      loading="lazy"
+      onError={() => setBroken(true)}
+    />
   )
 }
 

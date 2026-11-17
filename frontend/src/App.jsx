@@ -19,6 +19,8 @@ export default function App() {
   const [month, setMonth] = useState(null)
   const [view, setView] = useState({ month: null, days: [] })
   const [timeline, setTimeline] = useState(null)
+  const [loadError, setLoadError] = useState(null)
+  const [reloadKey, setReloadKey] = useState(0)
   const [selected, setSelected] = useState(null)
   const [zoom, setZoom] = useState(1)
   const timelineApi = useRef(null)
@@ -36,11 +38,17 @@ export default function App() {
     let cancelled = false
     fetchJSON(`/api/summary?month=${month}`)
       .then((data) => {
-        if (!cancelled) setView({ month: data.month, days: data.days })
+        if (!cancelled) {
+          setView({ month: data.month, days: data.days })
+          setLoadError(null)
+        }
       })
-      .catch((err) => console.error('month load failed', err))
+      .catch((err) => {
+        console.error('month load failed', err)
+        if (!cancelled) setLoadError(`calendar month failed to load (${err.message})`)
+      })
     return () => { cancelled = true }
-  }, [month])
+  }, [month, reloadKey])
 
   // A push that belongs to the visible month refreshes its cells in place.
   useEffect(() => {
@@ -51,15 +59,19 @@ export default function App() {
   const refreshTimeline = useCallback(async (target) => {
     try {
       const data = await fetchJSON(`/api/timeline?month=${target}`)
-      if (data.month === target) setTimeline(data)
+      if (data.month === target) {
+        setTimeline(data)
+        setLoadError(null)
+      }
     } catch (err) {
       console.error('timeline load failed', err)
+      setLoadError(`timeline failed to load (${err.message})`)
     }
   }, [])
 
   useEffect(() => {
     if (month) refreshTimeline(month)
-  }, [month, refreshTimeline])
+  }, [month, refreshTimeline, reloadKey])
 
   // Sessions change on every push: refetch once per burst rather than per frame.
   useEffect(() => {
@@ -108,6 +120,14 @@ export default function App() {
 
       <section>
         <h2>Who was online</h2>
+        {loadError && (
+          <div className="notice error small">
+            {loadError}. The live panes above are unaffected.{' '}
+            <button type="button" className="btn ghost small" onClick={() => setReloadKey((n) => n + 1)}>
+              Retry
+            </button>
+          </div>
+        )}
         <Calendar
           month={month}
           days={view.days}

@@ -1138,9 +1138,11 @@ def check_restart_queue(playernum, uptime):
     with _db_lock, db() as conn:
         issued = _state(conn, "restart_issued")
         if issued:
-            before = issued.get("uptime")
-            restarted = uptime is not None and before is not None and uptime < before
-            if restarted or (now - parse_iso(issued["at"])).total_seconds() > 900:
+            # A restarted game reports less uptime than the time that has passed
+            # since the request, whatever the box was up to beforehand.
+            elapsed = (now - parse_iso(issued["at"])).total_seconds()
+            started_again = uptime is not None and uptime + 30 < elapsed
+            if started_again or elapsed > 900:
                 _set_state(conn, "restart_issued", None)
                 publish()
             return

@@ -257,12 +257,32 @@ class RestartQueueTests(unittest.TestCase):
             self.assertIsNone(paladmin._state(conn, "restart_empty_since"))
         self.assertEqual(self.calls, [])
 
+    def test_issued_flag_clears_once_the_game_reports_fresh_uptime(self):
+        def issued(seconds_ago):
+            with paladmin._db_lock, paladmin.db() as conn:
+                paladmin._set_state(conn, "restart_issued", {
+                    "at": paladmin.iso(paladmin.now_utc() - dt.timedelta(seconds=seconds_ago)),
+                    "by": "192.168.0.42", "mode": "queue", "message": "m", "uptime": 14})
+
+        issued(200)
+        paladmin.check_restart_queue(0, 60)          # back up: 60 s of uptime, 200 elapsed
+        with paladmin.db() as conn:
+            self.assertIsNone(paladmin._state(conn, "restart_issued"))
+
+        issued(200)
+        paladmin.check_restart_queue(0, 214)         # never went down: uptime tracks elapsed
+        with paladmin.db() as conn:
+            self.assertIsNotNone(paladmin._state(conn, "restart_issued"))
+
 
 def tearDownModule():
     # The sqlite connections in app.py are committed but not closed, and Windows
     # keeps the database file locked until they are collected.
     import gc
-    gc.collect()
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", ResourceWarning)
+        gc.collect()
     shutil.rmtree(TMP, ignore_errors=True)
 
 

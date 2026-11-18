@@ -173,3 +173,58 @@ for t in (\"sessions\", \"events\", \"players\", \"metrics\"):
 | Every level shows `—` | Levels exist only while a player is online; they fill in on next login |
 | 502 through the proxy | Container unhealthy, or `traefik.docker.network` not matching the network the container joined |
 | 401 with the right password | Label hash and `.env` plaintext out of sync |
+
+## If the whole host stops answering
+
+Observed on 2026-11-17, after 25 days of uptime. Its signature is specific and
+worth recognising, because nothing is written to the journal:
+
+| What you see | What it rules out |
+|---|---|
+| ping replies in <1 ms, ARP resolves | network, switch, cabling |
+| `:22` accepts the TCP connection, then **resets before the sshd banner** | sshd config, firewall, MaxStartups — sshd cannot start a session at all |
+| `:8080` (SABnzbd) answers `500` with `OSError: [Errno 5] I/O error` reading a file from its own image | a single broken container — uncached reads are failing for everything |
+| every other published port closed | Traefik/Pi-hole/Dockge/Sonarr… down, i.e. most containers died |
+| journal ends mid-stream with no shutdown sequence | a graceful stop or a kernel panic — the write path died with the freeze |
+| `df -h` shows plenty free | a full disk |
+| last `sar` sample is idle (91% idle, 0 blocked) | an I/O storm or a runaway process caused it |
+
+Recovery is a **power cycle**; it comes back on its own with every container
+starting normally. Nothing to repair: ext4 replays its journal, and the game
+autosaves every 30 s so at most seconds of world state are lost.
+
+Diagnose the drive afterwards without installing anything (no sudo needed,
+Docker is enough) — `smartctl` is not in the base image:
+
+```bash
+docker run --rm --cap-add SYS_ADMIN --device /dev/nvme0n1 alpine:3.20 sh -c \
+  "apk add --no-cache smartmontools >/dev/null && smartctl -d nvme -a /dev/nvme0n1"
+```
+
+On 2026-11-17 that reported a healthy device: media errors `0`, error-log
+entries `0`, spare `99%`, used `15%`, warning threshold `86 °C` — no wear-out
+story. What it did show is the likely cause: the drive advertises NVMe power
+state 4 with **45 ms exit latency**, and the kernel's default
+`nvme_core.default_ps_max_latency_us` of `100000` lets it enter that state.
+A controller that never finishes waking up looks exactly like this freeze.
+
+Mitigation, applied at the next scheduled reboot (needs sudo, so not done from
+here):
+
+```bash
+# keep the drive out of the deep states whose exit is measured in tens of ms
+sudo sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 nvme_core.default_ps_max_latency_us=0"/' /etc/default/grub
+sudo update-grub
+grep GRUB_CMDLINE_LINUX_DEFAULT /etc/default/grub
+# after the reboot:
+cat /sys/module/nvme_core/parameters/default_ps_max_latency_us   # expect 0
+```
+
+Note that this board does **not** support PCIe AER (`_OSC: platform does not
+support [AER]`), so a dirty link leaves no trace in `dmesg`; absence of AER
+errors is not evidence that the link is clean. Watch `Unsafe Shutdowns` in the
+SMART output: it stood at `10` after four abrupt boot endings, and if it climbs
+without you power cycling, suspect power delivery rather than the controller.
+
+The Palworld backups and `data/paladmin.db` live on this same disk, so a drive
+failure takes the backups with it. Keep a copy elsewhere.

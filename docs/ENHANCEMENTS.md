@@ -84,6 +84,12 @@ blob/disk comparisons diverge.
   container can read other containers' environment, which is acceptable only
   because the app is behind basic auth on a single-user host. Do not add write
   scopes: restarts go through the game's own REST `shutdown`, not the Docker API.
+- **Container logs are capped in `compose.yaml`, and must stay capped.** Docker's
+  json-file driver is unbounded by default, gunicorn writes an access line per
+  request, and a full disk is not a soft failure: sshd accepts the TCP
+  connection and then resets it before sending its banner, so nobody can log in
+  to fix it. The game container grows much faster than this one — give it the
+  same `logging:` block.
 - **One host directory is mounted read-write:** the game's settings directory, at
   `/palconfig`. It is the only file the dashboard writes outside `data/`, and it
   writes atomically (temp + rename) with a `.bak` of the previous version.

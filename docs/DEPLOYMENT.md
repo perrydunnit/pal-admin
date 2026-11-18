@@ -5,70 +5,71 @@ prior conversation.
 
 ## Where it runs
 
+Fill these in for your own host; the values below are examples.
+
 | | |
 |---|---|
-| Host | `paladmin-host` — Ubuntu 24.04, kernel 7.x, Docker 29.0.4, Compose v2.40.3 |
-| SSH | `ssh paladmin-host` (user `admin`) — configured in `~/.ssh/config` |
-| Stack path | `/opt/stacks/paladmin` |
+| Host | any Linux box with Docker Engine + Compose v2 (`paladmin-host` in the commands here) |
+| SSH | an alias in `~/.ssh/config`, so `scripts/deploy.sh` can reach it |
+| Stack path | `/opt/stacks/paladmin` (override with `PALADMIN_REMOTE_DIR`) |
 | Compose project | `paladmin`, working dir `/opt/stacks/paladmin`, file `compose.yaml` |
-| Orchestrator | [Dockge](https://github.com/louislam/dockge) manages `/opt/stacks/*` — this stack appears in its UI |
+| Orchestrator | [Dockge](https://github.com/louislam/dockge) manages `/opt/stacks/*` — optional, but the paths assume its layout |
 | Container | `paladmin`, image `paladmin:latest` (built on the host, not pushed anywhere) |
-| Network | external `media_default` (shared with Traefik and the game) |
-| URL | `https://pal-admin.example.com` |
+| Network | external `media_default`, shared with Traefik and the game (`TRAEFIK_NETWORK`) |
+| URL | whatever `PALADMIN_HOSTNAME` names |
 | Runtime data | `/opt/stacks/paladmin/data/paladmin.db` (+ `-wal`, `-shm`) |
-| Game settings | `/opt/stacks/palworld/palworld/Pal/Saved/Config/LinuxServer` → `/palconfig` (read-write) |
+| Game settings | the game stack's `Pal/Saved/Config/LinuxServer`, mounted as `/palconfig` (read-write) |
 
 The container listens on **8000** and is never published to the host — Traefik
-reaches it over `media_default`.
+reaches it over the shared network.
 
-`sudo` on the host requires a password, so everything here runs through the
-`docker` group instead. The stack directory is owned by `admin` and can be
-edited directly; the container runs as root and writes `data/` and the game's
-settings directory.
+Everything here runs through the `docker` group rather than `sudo`. The stack
+directory is owned by the account that deploys it and can be edited directly;
+the container runs as root and writes `data/` and the game's settings directory.
 
 The one game path in the mount list is deliberate: the config panel needs the
-settings directory, and nothing else from `/opt/stacks/palworld` is visible to
-this container. `PAL_SETTINGS_DIR` in `.env` overrides it if the game stack ever
+settings directory, and nothing else from the game stack is visible to this
+container. `PAL_SETTINGS_DIR` in `.env` overrides it if the game stack ever
 moves.
 
 ## DNS, TLS and the proxy
 
-- `*.example.com` resolves to this box: `192.168.1.10` on the LAN (Pi-hole),
-  `203.0.113.10` from the internet. `pal-admin.example.com` needs no extra record —
-  the same is true of `pal.example.com`.
-- Traefik is a separate stack at `/opt/stacks/infra` (static config under
-  `/opt/traefik`, ACME state in `/opt/traefik/letsencrypt/acme.json`) with
+- Point a hostname (`PALADMIN_HOSTNAME`) at the box — a LAN record and, if you
+  want it reachable from outside, a public one. Nothing here depends on which
+  DNS you use.
+- Traefik is a separate stack (the labels assume its static config lives under
+  `/opt/traefik`, with ACME state in `/opt/traefik/letsencrypt/acme.json`) with
   entrypoints `web` (80) and `websecure` (443) and a `letsencrypt` HTTP-01
   certresolver.
-- Certificates are issued per hostname on first request and renewed by Traefik;
-  this host's cert is `CN=pal-admin.example.com`.
+- Certificates are issued per hostname on first request and renewed by Traefik.
 - Routers, all declared as labels in `compose.yaml`:
   - `paladmin-secure` → `websecure`, TLS via `letsencrypt`, middleware `paladmin-auth`
   - `paladmin` → `web`, redirects to HTTPS (`paladmin-redirect`)
   - service port `8000`
 
 If Traefik serves a stale config and ignores a new container, restart it
-(`docker restart traefik`, or from `/opt/stacks/infra`) and it rebuilds from the
-Docker provider — briefly disruptive to every proxied host.
+(`docker restart traefik`, or from its own stack directory) and it rebuilds from
+the Docker provider — briefly disruptive to every proxied host.
 
 ## Authentication
 
-HTTP basic auth at the proxy: user `admin`, password = the game's
-`ADMIN_PASSWORD`.
+HTTP basic auth at the proxy, with a bcrypt hash supplied through `.env`:
 
-- `compose.yaml` holds the bcrypt hash in the `paladmin-auth.basicauth.users`
-  label. `$` is written as `$$` so Compose leaves the literal `$` intact.
-- `.env` holds the plaintext, which the app uses to call the game REST API.
+- `PALADMIN_BASICAUTH_USERS` holds an htpasswd `user:bcrypt` pair. Single-quote
+  it in `.env` so the `$` signs survive; `compose.yaml` only references the
+  variable, so no credential is committed.
+- `ADMIN_PASSWORD` holds the plaintext, which the app uses to call the game REST
+  API.
 
 Rotating it:
 
 ```bash
-# 1. new bcrypt hash
+# 1. new bcrypt hash (htpasswd ships with apache2-utils)
 htpasswd -nbB admin 'NEWPASSWORD'
-#    no htpasswd? python3 -c "import crypt;print(crypt.crypt('NEWPASSWORD', crypt.mksalt(crypt.METHOD_BLOWFISH)))"
+#    no htpasswd? python3 -c "import bcrypt;print('admin:' + bcrypt.hashpw(b'NEWPASSWORD', bcrypt.gensalt()).decode())"
 
-# 2. escape $ as $$ and paste into the paladmin-auth label in compose.yaml
-# 3. update ADMIN_PASSWORD in .env
+# 2. put it in .env, single-quoted: PALADMIN_BASICAUTH_USERS='admin:$2y$05$…'
+# 3. update ADMIN_PASSWORD too if the game's password changed
 # 4. apply (force-recreate, not restart)
 docker compose up -d --force-recreate
 ```
@@ -78,22 +79,24 @@ game with the plaintext.
 
 ## Deploying a change
 
-From a checkout on any machine that can `ssh paladmin-host`:
+From a checkout on any machine that can `ssh` the host:
 
 ```bash
-scripts/deploy.sh --dry-run    # preview what would be copied
-scripts/deploy.sh              # copy, rebuild, recreate, wait for health
+export PALADMIN_REMOTE=paladmin-host   # ssh alias of the box that runs the stack
+scripts/deploy.sh --dry-run            # preview what would be copied
+scripts/deploy.sh                      # copy, rebuild, recreate, wait for health
 ```
 
-The script copies `app.py`, `frontend/`, `docs/`, `compose.yaml`, `Dockerfile`,
-`requirements.txt` and `README.md` to `/opt/stacks/paladmin` — **never `.env`** —
-then runs `docker compose up -d --build` there.
+The script copies `app.py`, `palconfig.py`, `frontend/`, `docs/`, `compose.yaml`,
+`Dockerfile`, `requirements.txt` and `README.md` to `$PALADMIN_REMOTE_DIR`
+(default `/opt/stacks/paladmin`) — **never `.env`** — then runs
+`docker compose up -d --build` there.
 
 Manual equivalent:
 
 ```bash
-scp app.py paladmin-host:/opt/stacks/paladmin/
-scp -r templates docs paladmin-host:/opt/stacks/paladmin/
+scp app.py palconfig.py paladmin-host:/opt/stacks/paladmin/
+scp -r frontend docs paladmin-host:/opt/stacks/paladmin/
 ssh paladmin-host 'cd /opt/stacks/paladmin && docker compose up -d --build'
 ```
 
@@ -176,55 +179,14 @@ for t in (\"sessions\", \"events\", \"players\", \"metrics\"):
 
 ## If the whole host stops answering
 
-Observed on 2026-11-17, after 25 days of uptime. Its signature is specific and
-worth recognising, because nothing is written to the journal:
+When the box itself freezes, work from the outside first: ping and ARP tell you
+whether it is the network, and a TCP connect that resets before the sshd banner
+means sshd cannot start a session at all. A journal that ends mid-stream with no
+shutdown sequence points at the write path, and `df -h` plus `dmesg` rule out a
+full disk before you start replacing hardware. Recovery from a hard freeze is a
+power cycle: ext4 replays its journal, and the game autosaves every 30 s, so at
+most seconds of world state are lost.
 
-| What you see | What it rules out |
-|---|---|
-| ping replies in <1 ms, ARP resolves | network, switch, cabling |
-| `:22` accepts the TCP connection, then **resets before the sshd banner** | sshd config, firewall, MaxStartups — sshd cannot start a session at all |
-| `:8080` (SABnzbd) answers `500` with `OSError: [Errno 5] I/O error` reading a file from its own image | a single broken container — uncached reads are failing for everything |
-| every other published port closed | Traefik/Pi-hole/Dockge/Sonarr… down, i.e. most containers died |
-| journal ends mid-stream with no shutdown sequence | a graceful stop or a kernel panic — the write path died with the freeze |
-| `df -h` shows plenty free | a full disk |
-| last `sar` sample is idle (91% idle, 0 blocked) | an I/O storm or a runaway process caused it |
-
-Recovery is a **power cycle**; it comes back on its own with every container
-starting normally. Nothing to repair: ext4 replays its journal, and the game
-autosaves every 30 s so at most seconds of world state are lost.
-
-Diagnose the drive afterwards without installing anything (no sudo needed,
-Docker is enough) — `smartctl` is not in the base image:
-
-```bash
-docker run --rm --cap-add SYS_ADMIN --device /dev/nvme0n1 alpine:3.20 sh -c \
-  "apk add --no-cache smartmontools >/dev/null && smartctl -d nvme -a /dev/nvme0n1"
-```
-
-On 2026-11-17 that reported a healthy device: media errors `0`, error-log
-entries `0`, spare `99%`, used `15%`, warning threshold `86 °C` — no wear-out
-story. What it did show is the likely cause: the drive advertises NVMe power
-state 4 with **45 ms exit latency**, and the kernel's default
-`nvme_core.default_ps_max_latency_us` of `100000` lets it enter that state.
-A controller that never finishes waking up looks exactly like this freeze.
-
-Mitigation, applied at the next scheduled reboot (needs sudo, so not done from
-here):
-
-```bash
-# keep the drive out of the deep states whose exit is measured in tens of ms
-sudo sed -i 's/^GRUB_CMDLINE_LINUX_DEFAULT="\(.*\)"/GRUB_CMDLINE_LINUX_DEFAULT="\1 nvme_core.default_ps_max_latency_us=0"/' /etc/default/grub
-sudo update-grub
-grep GRUB_CMDLINE_LINUX_DEFAULT /etc/default/grub
-# after the reboot:
-cat /sys/module/nvme_core/parameters/default_ps_max_latency_us   # expect 0
-```
-
-Note that this board does **not** support PCIe AER (`_OSC: platform does not
-support [AER]`), so a dirty link leaves no trace in `dmesg`; absence of AER
-errors is not evidence that the link is clean. Watch `Unsafe Shutdowns` in the
-SMART output: it stood at `10` after four abrupt boot endings, and if it climbs
-without you power cycling, suspect power delivery rather than the controller.
-
-The Palworld backups and `data/paladmin.db` live on this same disk, so a drive
-failure takes the backups with it. Keep a copy elsewhere.
+**Backups.** The Palworld backups and `data/paladmin.db` normally live on the
+host's own disk, so a drive failure takes the backups with it. Keep a copy
+elsewhere.

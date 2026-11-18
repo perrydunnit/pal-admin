@@ -11,10 +11,10 @@ The full working agreement lives in [AGENTS.md](../AGENTS.md) and the process in
   explaining why, ending with
   `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>`.
 - **Deploy** with `scripts/deploy.sh`. It refuses a dirty tree, rebuilds the
-  `paladmin` stack on `paladmin-host`, waits for health, and records the commit in
-  `/opt/stacks/paladmin/DEPLOYED`.
-- **Confirm live**: `https://pal-admin.example.com` returns 401 without
-  credentials and 200 with them, and the new behaviour is actually visible.
+  `paladmin` stack on `$PALADMIN_REMOTE`, waits for health, and records the
+  commit in `$PALADMIN_REMOTE_DIR/DEPLOYED`.
+- **Confirm live**: the deployed URL returns 401 without credentials and 200
+  with them, and the new behaviour is actually visible.
   Report the deployed sha with evidence.
 
 Never commit `.env` or `data/`. Never restart the game server to deploy this.

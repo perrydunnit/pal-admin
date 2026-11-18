@@ -20,7 +20,6 @@ TMP = tempfile.mkdtemp(prefix="paladmin-test-")
 os.environ.update({
     "PALADMIN_NO_BACKGROUND": "1",
     "DB_PATH": os.path.join(TMP, "test.db"),
-    "MUSIC_DIR": os.path.join(TMP, "music"),
     "PAL_SETTINGS_FILE": os.path.join(TMP, "PalWorldSettings.ini"),
     "PAL_ICON_DIR": os.path.join(TMP, "palicons"),
     "LAN_CIDRS": "192.168.0.0/24",

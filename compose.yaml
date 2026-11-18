@@ -47,8 +47,9 @@ services:
       - traefik.http.middlewares.paladmin-redirect.redirectscheme.scheme=https
       - traefik.http.middlewares.paladmin-redirect.redirectscheme.permanent=true
 
-      # Same credential as the game's admin/API password.
-      - traefik.http.middlewares.paladmin-auth.basicauth.users=REDACTED
+      # The proxy gate. `user:bcrypt` pairs come from .env so no credential is
+      # committed; see .env.example for how to generate one.
+      - traefik.http.middlewares.paladmin-auth.basicauth.users=${PALADMIN_BASICAUTH_USERS:-}
 
       - traefik.http.services.paladmin.loadbalancer.server.port=8000
 

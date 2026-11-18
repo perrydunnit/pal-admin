@@ -34,8 +34,8 @@ else
   fi
 
   # A local module imported by app.py must also be shipped: the Dockerfile has
-  # to COPY it and deploy.sh has to transfer it. Missing this took the site down
-  # once (musiclib.py), and py_compile alone cannot see it.
+  # to COPY it and deploy.sh has to transfer it. Missing this has taken the site
+  # down before, and py_compile alone cannot see it.
   if "$PY" - >"$tmp/ship" 2>&1 <<'PY'
 import ast, pathlib, sys
 
@@ -169,13 +169,15 @@ try:
     for line in env.splitlines():
         if line.startswith("ADMIN_PASSWORD="):
             value = line.split("=", 1)[1].strip()
-            if len(value) >= 8:
-                for f in files:
-                    try:
-                        if value in open(f, encoding="utf-8").read():
-                            problems.append(f"{f}: contains the live ADMIN_PASSWORD")
-                    except (OSError, UnicodeDecodeError):
-                        pass
+            # .env.example is copied to .env in CI, so a placeholder is not a leak
+            if len(value) < 8 or any(p in value.lower() for p in placeholders):
+                continue
+            for f in files:
+                try:
+                    if value in open(f, encoding="utf-8").read():
+                        problems.append(f"{f}: contains the live ADMIN_PASSWORD")
+                except (OSError, UnicodeDecodeError):
+                    pass
 except FileNotFoundError:
     pass
 

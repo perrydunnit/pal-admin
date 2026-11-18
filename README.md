@@ -10,15 +10,13 @@ server with the REST API enabled.
   game's `game-data` endpoint is enabled), with a schematic coordinate map
 - **History**: monthly calendar, and a continuous month timeline with a sticky
   player column where a session crossing midnight is one unbroken bar
-- **Music**: upload audio for the PalPiano mod; it is stored under `data/music`
-  and served to the game client, so players stop passing files around
 
-Served at **https://pal-admin.example.com** behind HTTP basic auth.
+Behind HTTP basic auth at whatever hostname you point at it.
 
 ## Quick start
 
 ```bash
-cp .env.example .env      # fill in ADMIN_PASSWORD (the game's admin password)
+cp .env.example .env      # fill in ADMIN_PASSWORD and the basic-auth hash
 docker compose up -d --build
 ```
 
@@ -36,22 +34,6 @@ node requirement on the host.
 
 Players, metrics and chat are reconciled continuously; the page is pushed over
 SSE rather than polled.
-
-## Music library
-
-The dashboard stores audio for the piano mod: upload on the **Music library**
-panel, and the mod's picker lists it alongside local files, downloading a track
-the first time someone plays it.
-
-- stored in `data/music` (the same volume as `paladmin.db`), named by content
-  hash, so re-uploading is a no-op and backups cover it;
-- types checked by magic bytes, not just the extension; 256 MB per file by
-  default (`MUSIC_MAX_BYTES`), streamed to disk so the cap costs no memory;
-  raise `GUNICORN_TIMEOUT` with it for slow upload links;
-- `GET /api/music?format=tsv` is the mod's view — tab separated, because UE4SS
-  has no JSON parser.
-
-See [docs/API.md](docs/API.md#music-library) for the endpoints.
 
 ## Server config
 The **Server config** panel lists every `PalWorldSettings.ini` key the game
@@ -81,7 +63,6 @@ The panel says so in a banner when that is missing. See
 
 ```
 app.py                 Flask app: collector threads, JSON + SSE endpoints
-musiclib.py            audio upload rules (pure, unit tested)
 palconfig.py           server settings catalogue, ini parsing and validation
 tests/                 stdlib unittest for the pure backend helpers
 frontend/              React UI (Vite): components, styles, unit tests
@@ -91,7 +72,6 @@ Dockerfile             node build stage + python:3.12-slim + gunicorn
 requirements.txt       flask, gunicorn, requests, docker
 .env.example           every setting, placeholder values only
 scripts/deploy.sh      publish this checkout to the server
-mods/PalPiano/         UE4SS mod: play music on in-game pianos
 docs/                  see below
 data/                  SQLite runtime state (gitignored)
 ```
@@ -131,11 +111,11 @@ scripts/install-hooks.sh     # once per clone: verify on every commit
 git switch -c feat/whatever  # 1. branch
 scripts/verify.sh            # 2. verify
 git commit -am "feat: …"     # 3. commit (conventional, one idea)
-scripts/deploy.sh            # 4. deploy: verifies, refuses a dirty tree, rebuilds, checks health
+PALADMIN_REMOTE=myhost scripts/deploy.sh   # 4. deploy: verifies, refuses a dirty tree, rebuilds, checks health
 ```
 
 Deploys record `commit`, `subject`, `deployed`, `deployed_by` in
-`/opt/stacks/paladmin/DEPLOYED`, so what is live is always identifiable.
+`$PALADMIN_REMOTE_DIR/DEPLOYED`, so what is live is always identifiable.
 
 ## Ground rules
 
@@ -253,12 +233,14 @@ this stack has been running.
 
 ## Auth
 
-HTTP basic auth at Traefik, user `admin`, using the same password as the game's
-`ADMIN_PASSWORD`. The middleware hash lives in `compose.yaml`; the plaintext in
-`.env` is used by the app to call the game REST API.
+HTTP basic auth at Traefik: the `paladmin-auth` middleware takes its
+`user:bcrypt` pair from `PALADMIN_BASICAUTH_USERS` in `.env`, so no credential
+is committed. `ADMIN_PASSWORD` in the same file is the plaintext the app uses to
+call the game REST API; keep the two in sync.
 
-To change the password: update `ADMIN_PASSWORD` in `.env`, regenerate the
-bcrypt hash, and replace the value in the `paladmin-auth` label.
+To change the password: generate a new hash with `htpasswd -nbB admin '…'`, put
+it in `PALADMIN_BASICAUTH_USERS`, update `ADMIN_PASSWORD`, and
+`docker compose up -d --force-recreate`.
 
 The app adds one gate of its own on top of basic auth: anything that changes the
 game — saving settings, restarting it, cancelling a queued restart — is refused
@@ -268,11 +250,10 @@ from the *last* hop, which is the one Traefik wrote; a forged header therefore
 cannot place a caller on the local network. Anything the host or the router
 itself sends is seen as `192.168.0.1` and counts as local, by design.
 
-Opening the page from a bookmark that embeds the credentials
-(`https://admin:PASSWORD@pal-admin.example.com/`) is supported: browsers refuse
-to build a request from a URL that carries them, so the UI builds every API URL
-from `location.origin` and cleans the address bar on load. Without that, the
-page renders but every panel that fetches its own data fails.
+Opening the page from a bookmark that embeds the credentials is supported:
+browsers refuse to build a request from a URL that carries them, so the UI
+builds every API URL from `location.origin` and cleans the address bar on load.
+Without that, the page renders but every panel that fetches its own data fails.
 
 ## Operations
 
@@ -280,8 +261,8 @@ From a checkout, publish and rebuild in one step — it verifies, refuses a dirt
 tree, rebuilds, waits for health, and records the commit:
 
 ```bash
-scripts/deploy.sh            # --dry-run to preview, --rollback to redeploy the recorded commit
-ssh paladmin-host 'cat /opt/stacks/paladmin/DEPLOYED'
+PALADMIN_REMOTE=myhost scripts/deploy.sh   # --dry-run to preview, --rollback to redeploy the recorded commit
+ssh myhost 'cat /opt/stacks/paladmin/DEPLOYED'
 ```
 
 On the server:

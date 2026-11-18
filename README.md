@@ -275,3 +275,8 @@ docker compose logs -f           # collector warnings show here
 
 Restarting this stack has no effect on the game server. Full runbook, including
 rollback: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+## License
+
+[MIT](LICENSE). Palworld and the game's assets are Pocketpair's; nothing of
+theirs is bundled here.

@@ -43,9 +43,9 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
   },
   "server": {                    // /v1/api/info, refreshed every 30 min
     "version": "v1.0.5.102999",
-    "servername": "Palworld Admin",
+    "servername": "Default Palworld Server",
     "description": "…",
-    "worldguid": "ABCDEF01…"
+    "worldguid": "ABCDEF0123456789…"
   },
   "chat": [                      // last 60 lines, oldest first
     { "ts": "2026-11-09T20:21:44+00:00", "name": "Player2", "message": "Lvl 18 ancient tech unlock" }
@@ -217,67 +217,6 @@ Inclusive range, capped at 92 days.
 ```
 
 Missing parameters or a range wider than 92 days → `400 {"error": "…"}`.
-
-## Music library
-
-Uploaded audio lives in `MUSIC_DIR` (default `/data/music`, beside the database),
-so it is on the same volume as the SQLite state and is covered by the same
-backups. Files are stored under their content hash, so re-uploading the same
-bytes is a no-op.
-
-### GET /api/music
-
-```jsonc
-{
-  "tracks": [
-    {
-      "id": "a533b8bea6f0e2155b99d7d6fffecb06",  // sha256[:32]
-      "name": "Ode to Joy",
-      "ext": ".mid",
-      "kind": "midi",                            // midi | audio
-      "bytes": 2048,
-      "uploaded": "2026-11-12T07:27:08+00:00",
-      "source": "Ode to Joy.mid",                // original filename
-      "url": "/api/music/<id>/file"
-    }
-  ],
-  "count": 1,
-  "bytes": 2048,
-  "limit_bytes": 67108864
-}
-```
-
-`?format=tsv` returns the same list for clients without a JSON parser (the
-in-game mod), one track per line, tab separated, after a
-`#id\tkind\text\tbytes\tname` header.
-
-### POST /api/music
-
-`multipart/form-data` with a `file` field. Accepts `.mid .midi .wav .mp3 .flac
-.ogg .oga .opus .m4a .aac .wma`, up to `MUSIC_MAX_BYTES` (default 256 MB).
-
-The body is streamed to a temp file beside the library and hashed in 256 KB
-chunks, so memory per upload is constant no matter how large the limit is. The
-practical ceilings are free space in `/data` and gunicorn's request timeout —
-raise `GUNICORN_TIMEOUT` (default 120 s) alongside `MUSIC_MAX_BYTES`, because a
-slow upload counts against it: 256 MB needs ~3.5 minutes above 10 Mbit/s.
-
-- `201` with `{"track": {…}, "duplicate": false}` when stored.
-- `200` with `"duplicate": true` when the same bytes are already present.
-- `400 {"error": "…"}` for an unsupported extension, an empty file, or content
-  that does not match its extension (checked by magic bytes, not by name).
-
-### DELETE /api/music/{id}
-
-Removes the row and the file. `404` for an unknown id.
-
-### GET /api/music/{id}/file
-
-Downloads the file with a content type derived from the extension. `410` when
-the row exists but the file is missing on disk.
-
-The live summary also carries `music: {count, bytes, limit_bytes}` so open
-browsers refresh the panel when someone else uploads.
 
 ## GET /api/pal-icon/{species}
 

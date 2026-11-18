@@ -76,19 +76,20 @@ covers them, and `verify.sh` fails if `.env` ever becomes tracked.
 ## 5. Deploy
 
 ```bash
-scripts/deploy.sh            # verifies, refuses dirty trees, copies, rebuilds, waits for health
+export PALADMIN_REMOTE=paladmin-host   # ssh alias of the box that runs the stack
+PALADMIN_URL=https://paladmin.example.com scripts/deploy.sh
 ```
 
-It copies only the deployable files — `app.py`, `frontend/`, `docs/`,
-`compose.yaml`, `Dockerfile`, `requirements.txt`, `README.md` — into
-`/opt/stacks/paladmin`, never `.env` or `data/`, then rebuilds and polls the
-healthcheck.
+It copies only the deployable files — `app.py`, `palconfig.py`, `frontend/`,
+`docs/`, `compose.yaml`, `Dockerfile`, `requirements.txt`, `README.md` — into
+`$PALADMIN_REMOTE_DIR` (default `/opt/stacks/paladmin`), never `.env` or
+`data/`, then rebuilds and polls the healthcheck.
 
 Outcomes:
 
 | Result | Meaning |
 |---|---|
-| `deployed abc1234 — https://…` | live, and `/opt/stacks/paladmin/DEPLOYED` records commit, subject, time, deployer |
+| `deployed abc1234 — https://…` | live, and `$PALADMIN_REMOTE_DIR/DEPLOYED` records commit, subject, time, deployer |
 | `error: working tree has uncommitted changes` | commit first, or `--allow-dirty` if you truly mean it |
 | `error: verification failed; nothing deployed` | fix the gate, nothing shipped |
 | `error: container did not become healthy in 60s` | code is on the server but unhealthy; logs are printed, fix and re-run |
@@ -101,9 +102,9 @@ Deploying this stack never touches the game server. See
 Health is necessary, not sufficient. After deploying:
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' -u "admin:$PASS" https://pal-admin.example.com/   # expect 200
-curl -s -o /dev/null -w '%{http_code}\n' https://pal-admin.example.com/                    # expect 401
-ssh paladmin-host 'cat /opt/stacks/paladmin/DEPLOYED'
+curl -s -o /dev/null -w '%{http_code}\n' -u "admin:$PASS" "$PALADMIN_URL/"   # expect 200
+curl -s -o /dev/null -w '%{http_code}\n' "$PALADMIN_URL/"                    # expect 401
+ssh "$PALADMIN_REMOTE" 'cat "$PALADMIN_REMOTE_DIR/DEPLOYED"'
 ```
 
 If the change touches the UI, load the page and look at it — the sticky timeline

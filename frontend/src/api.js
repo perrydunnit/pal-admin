@@ -103,26 +103,7 @@ export async function fetchJSON(url, attempt = 0) {
   return res.json()
 }
 
-export async function listMusic() {
-  return fetchJSON('/api/music')
-}
-
-export async function uploadMusic(file) {
-  const body = new FormData()
-  body.append('file', file)
-  const res = await fetch(apiUrl('/api/music'), { method: 'POST', body })
-  const data = await res.json().catch(() => ({}))
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`)
-  return data
-}
-
-export async function deleteMusic(id) {
-  const res = await fetch(apiUrl(`/api/music/${id}`), { method: 'DELETE' })
-  if (!res.ok) throw new Error(`HTTP ${res.status}`)
-  return res.json()
-}
-
-async function sendJSON(url, method, body) {
+export async function sendJSON(url, method, body) {
   const res = await fetch(apiUrl(url), {
     method,
     headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },

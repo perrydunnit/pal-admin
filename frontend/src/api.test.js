@@ -23,6 +23,8 @@ describe('apiUrl', () => {
   })
 
   it('keeps query strings and nested paths intact', () => {
-    expect(apiUrl('/api/music/abc/file', 'https://h')).toBe('https://h/api/music/abc/file')
+    expect(apiUrl('/api/timeline?month=2026-11&x=1', 'https://h')).toBe(
+      'https://h/api/timeline?month=2026-11&x=1',
+    )
   })
 })

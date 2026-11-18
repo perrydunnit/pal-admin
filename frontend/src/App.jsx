@@ -5,7 +5,6 @@ import Cards from './components/Cards.jsx'
 import WorldPanel from './components/WorldPanel.jsx'
 import LivePlayers from './components/LivePlayers.jsx'
 import ChatPanel from './components/ChatPanel.jsx'
-import MusicPanel from './components/MusicPanel.jsx'
 import PlayerStats from './components/PlayerStats.jsx'
 import Calendar from './components/Calendar.jsx'
 import Timeline from './components/Timeline.jsx'
@@ -106,11 +105,6 @@ export default function App() {
       <section>
         <h2>Chat</h2>
         <ChatPanel summary={summary} />
-      </section>
-
-      <section>
-        <h2>Music library</h2>
-        <MusicPanel summary={summary} />
       </section>
 
       <section>

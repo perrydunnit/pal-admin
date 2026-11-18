@@ -71,7 +71,7 @@ blob/disk comparisons diverge.
   brings the container back. `docker restart` is still forbidden: it can SIGKILL
   mid-save.
 - **The LAN gate trusts the last `X-Forwarded-For` hop.** Traefik replaces the
-  header with the peer it saw — verified on this host, where a forged
+  header with the peer it saw — verified in practice, where a forged
   `X-Forwarded-For: 192.168.0.99` came back as the real peer — so a spoofed
   header cannot move a caller into the LAN. The socket address is used directly
   when it is already local. Anything the host or the router itself sends arrives

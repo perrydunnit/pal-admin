@@ -7,13 +7,18 @@
 #   scripts/deploy.sh --allow-dirty deploy even with uncommitted changes
 #   scripts/deploy.sh --rollback    redeploy the currently deployed commit
 #
+# Environment:
+#   PALADMIN_REMOTE      ssh host that runs the stack (required)
+#   PALADMIN_REMOTE_DIR  stack directory there (default /opt/stacks/paladmin)
+#   PALADMIN_URL         what "deployed" prints as the live address (optional)
+#
 # Never copies .env — the server keeps its own. Records the deployed commit in
 # ${REMOTE_DIR}/DEPLOYED so the live version is always identifiable.
 set -euo pipefail
 
-REMOTE="${PALADMIN_REMOTE:-paladmin-host}"
-REMOTE_DIR="/opt/stacks/paladmin"
-FILES=(app.py musiclib.py palconfig.py compose.yaml Dockerfile requirements.txt README.md .dockerignore frontend docs)
+REMOTE="${PALADMIN_REMOTE:-}"
+REMOTE_DIR="${PALADMIN_REMOTE_DIR:-/opt/stacks/paladmin}"
+FILES=(app.py palconfig.py compose.yaml Dockerfile requirements.txt README.md .dockerignore frontend docs)
 
 DRY=0 SKIP_VERIFY=0 ALLOW_DIRTY=0 ROLLBACK=0
 for arg in "$@"; do
@@ -22,13 +27,18 @@ for arg in "$@"; do
     --skip-verify)  SKIP_VERIFY=1 ;;
     --allow-dirty)  ALLOW_DIRTY=1 ;;
     --rollback)     ROLLBACK=1 ;;
-    -h|--help)      sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)      sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg" >&2; exit 2 ;;
   esac
 done
 
 cd "$(dirname "$0")/.."
 
+[ -n "$REMOTE" ] || {
+  echo "error: set PALADMIN_REMOTE to the ssh host that runs the stack" >&2
+  echo "       (e.g. PALADMIN_REMOTE=myserver scripts/deploy.sh)" >&2
+  exit 2
+}
 [ -f .env ] || echo "warning: no local .env (not copied anyway — the server keeps its own)" >&2
 [ -f app.py ] || { echo "error: run from the repository root" >&2; exit 1; }
 
@@ -91,7 +101,7 @@ echo "==> installing"
 ssh "$REMOTE" "set -e
   cd '${remote_stage}'
   # move into place; .env and data/ live only on the server and stay untouched
-  for f in app.py musiclib.py palconfig.py compose.yaml Dockerfile requirements.txt README.md .dockerignore; do
+  for f in app.py palconfig.py compose.yaml Dockerfile requirements.txt README.md .dockerignore; do
     [ -f \"\$f\" ] && cp -f \"\$f\" '${REMOTE_DIR}/'
   done
   rm -rf '${REMOTE_DIR}/templates' '${REMOTE_DIR}/docs' '${REMOTE_DIR}/frontend'
@@ -112,7 +122,7 @@ for _ in $(seq 1 30); do
       printf 'deployed=%s\n' "$(date -Is)"
       printf 'deployed_by=%s\n' "$(whoami)"
     } | ssh "$REMOTE" "cat > '${REMOTE_DIR}/DEPLOYED'"
-    echo "==> deployed ${commit:0:7}${dirty} — https://pal-admin.example.com"
+    echo "==> deployed ${commit:0:7}${dirty}${PALADMIN_URL:+ — $PALADMIN_URL}"
     exit 0
   fi
   sleep 2

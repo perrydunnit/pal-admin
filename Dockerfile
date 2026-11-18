@@ -21,17 +21,14 @@ COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app.py ./
-COPY musiclib.py ./
 COPY palconfig.py ./
 COPY --from=ui /ui/dist ./static
 
 EXPOSE 8000
 
 # Single worker: the background collector thread must not run once per worker.
-# GUNICORN_TIMEOUT is quoted shell-style because it is read at start-up: a large
-# audio upload counts against this timeout, so raising MUSIC_MAX_BYTES much past
-# ~150 MB on a slow link needs a bigger value here too. exec keeps gunicorn as
-# the process that receives SIGTERM from `docker stop`.
+# GUNICORN_TIMEOUT is quoted shell-style because it is read at start-up. exec
+# keeps gunicorn as the process that receives SIGTERM from `docker stop`.
 ENV GUNICORN_TIMEOUT=120
 # --access-logfile keeps one line per request in the container log. It is the
 # only way to answer "it does not work on my phone": you can see whether the

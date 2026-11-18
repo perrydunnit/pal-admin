@@ -13,7 +13,6 @@ it, but changes there affect what appears here.
 | Compose | `/opt/stacks/palworld/compose.yaml` + `.env` |
 | Data | `/opt/stacks/palworld/palworld/` (world saves, config, logs) |
 | Backups | `/opt/stacks/palworld/backups/` |
-| World id | `ABCDEF0123456789` |
 | Address | `pal.example.com:8211` |
 
 Ports:
@@ -179,11 +178,11 @@ server with Epic Online Services so it appears in the in-game community browser 
 the only way a PS5/Xbox player can find it, since consoles have no direct-connect
 field. `PUBLIC_IP`/`PUBLIC_PORT` pin the advertised address behind NAT.
 
-NAT: UDP 8211 and 27015 are forwarded to `192.168.1.10` on the ASUS router via
-UPnP (entries `palworld-game`, `palworld-query`). A router reboot usually clears
-those; re-add with `upnpc -a 192.168.1.10 8211 8211 UDP` (and the same for
-27015). Without them the server is unreachable from outside even though it is
-healthy locally.
+NAT: UDP 8211 and 27015 must be forwarded to the game host, by hand or over
+UPnP (entries `palworld-game`, `palworld-query` if your router creates them).
+A router reboot usually clears UPnP entries; re-add with
+`upnpc -a <game-host-lan-ip> 8211 8211 UDP` (and the same for 27015). Without
+them the server is unreachable from outside even though it is healthy locally.
 
 ## Backups
 
@@ -193,8 +192,7 @@ Two independent mechanisms:
   written roughly every 30 s by the game, ~22 kept.
 - **Nightly tarballs** in `/opt/stacks/palworld/backups/` at 00:00 local, 14-day
   retention.
-- Plus ad-hoc pre-change tarballs and `coop-original.tar.gz`, the untouched
-  pre-migration co-op world.
+- Plus ad-hoc pre-change tarballs.
 
 ## Restarting the game safely
 

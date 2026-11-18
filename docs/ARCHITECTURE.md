@@ -119,8 +119,8 @@ does not, and both within about a second.
 **Player identity.** `/v1/api/players` reports `playerId: "None"` and the
 *platform account* as `name` for the few seconds while a character is still
 loading. Keying anything on that creates a throwaway second player — the
-`exampleplayer` / `exampleplayer-account` and `otherplayer` / `otherplayer-account` pairs that appeared
-on the timeline. So:
+`exampleplayer` / `exampleplayer-account` and `otherplayer` /
+`otherplayer-account` pairs that appeared on the timeline. So:
 
 - `resolve_player_id()` prefers the real id and otherwise looks for a row
   already known for that account (`players.user_id`), only inventing a

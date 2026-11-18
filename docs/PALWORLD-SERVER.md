@@ -211,8 +211,8 @@ Palworld player ids are deterministic per platform account:
 
 - Steam: `uid = u32(low32(cityhash64(steamid_utf16le)) + high32 * 23)`, e.g.
   `76561190000000000` → `abcdef01-0000-0000-0000-000000000000`.
-- PSN ids come from the console; the two current ones are `0123456789ABCDEF…` (exampleplayer) and
-  `FEDCBA98…` (Player2).
+- PSN ids come from the console and have the same shape as the game reports
+  them, e.g. `0123456789ABCDEF…`.
 
 The dashboard stores whatever the REST API reports as `playerId`, which is why
 the same person keeps one row across sessions.

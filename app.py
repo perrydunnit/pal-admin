@@ -111,6 +111,16 @@ CREATE UNIQUE INDEX IF NOT EXISTS ux_open_session
     ON sessions(player_id) WHERE ended_at IS NULL;
 CREATE INDEX IF NOT EXISTS ix_sessions_player ON sessions(player_id, started_at);
 
+-- Advancement history. `players.level` only holds the last value seen while
+-- online, so the curve of a player's progress has to be captured as it happens.
+CREATE TABLE IF NOT EXISTS level_samples (
+    player_id   TEXT NOT NULL,
+    ts          TEXT NOT NULL,
+    level       INTEGER NOT NULL,
+    PRIMARY KEY (player_id, ts)
+);
+CREATE INDEX IF NOT EXISTS ix_level_samples_player ON level_samples(player_id, ts);
+
 CREATE TABLE IF NOT EXISTS players (
     player_id   TEXT PRIMARY KEY,
     name        TEXT,
@@ -344,6 +354,35 @@ def upsert_player(conn, player_id, name=None, platform=None, level=None,
     )
 
 
+def record_level(conn, player_id, level, now, session_start=None):
+    """Store a level observation, but only when it adds information.
+
+    Rows are written when the level changed, or when the current session has no
+    observation yet (which brackets the session start). Polling every 30 s would
+    otherwise add ~2,880 identical rows per player per day.
+    """
+    if level is None:
+        return False
+    try:
+        level = int(level)
+    except (TypeError, ValueError):
+        return False
+    if isinstance(session_start, str):
+        session_start = parse_iso(session_start)
+    last = conn.execute(
+        "SELECT ts, level FROM level_samples WHERE player_id=? ORDER BY ts DESC LIMIT 1",
+        (player_id,),
+    ).fetchone()
+    if last is not None and int(last["level"]) == level:
+        if session_start is None or parse_iso(last["ts"]) >= session_start:
+            return False
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO level_samples(player_id, ts, level) VALUES(?,?,?)",
+        (player_id, iso(now), level),
+    )
+    return cur.rowcount > 0
+
+
 def handle_join(conn, ts, name, user_id, player_id):
     # A poll may already have recorded this connection under the account id.
     merge_identity(conn, player_id, user_id)
@@ -534,12 +573,17 @@ def poll_api():
                 y=p.get("location_y"),
                 user_id=user_id,
             )
-            if open_session_for(conn, pid) is None:
+            open_row = open_session_for(conn, pid)
+            if open_row is None:
+                session_start = now
                 conn.execute(
                     "INSERT INTO sessions(player_id, user_id, started_at, ended_at, source)"
                     " VALUES(?,?,?,NULL,'poll')",
                     (pid, user_id, iso(now)),
                 )
+            else:
+                session_start = parse_iso(open_row["started_at"])
+            record_level(conn, pid, p.get("level"), now, session_start)
 
         for row in conn.execute("SELECT * FROM sessions WHERE ended_at IS NULL").fetchall():
             if row["player_id"] in online:
@@ -1260,6 +1304,102 @@ def split_by_day(row, lo, hi):
         cursor = chunk_end
 
 
+# Player EXP required to leave each level, 1 through 79, from
+# palworld.wiki.gg/wiki/Level (1.0, cap 80). The API never reports EXP, so this
+# table is how a level change turns into an amount of progress.
+LEVEL_COST = (
+    50, 150, 200, 340, 520, 700, 900, 1150, 1500, 1900,
+    2400, 3000, 3800, 4677, 5353, 5860, 6367, 8564, 9409, 11944,
+    12789, 15831, 17690, 21070, 22760, 26140, 27830, 29520, 31210, 34546,
+    38229, 42295, 46783, 51738, 57207, 63245, 69910, 77267, 85389, 94355,
+    104254, 115182, 127245, 140561, 155260, 171487, 189400, 209174, 230983, 255059,
+    281635, 310972, 343356, 378104, 417573, 460143, 506239, 556335, 610983, 670817,
+    736563, 809074, 889276, 977950, 1075818, 1187703, 1311213, 1447560, 1598080, 1764244,
+    1947679, 2150182, 2373734, 2620524, 2892960, 3193698, 3525662, 3892088, 4296550,
+)
+# LEVEL_TOTAL[L] is the lifetime EXP of a character that has just reached L.
+LEVEL_TOTAL = [0, 0]
+for _cost in LEVEL_COST:
+    LEVEL_TOTAL.append(LEVEL_TOTAL[-1] + _cost)
+del _cost
+
+
+def level_exp(level):
+    """Lifetime EXP at `level`. Past the table's cap, extrapolate its last step.
+
+    The wiki stops at the game's cap of 80. A modded server can raise it, and
+    clamping would silently report a stalled player, so keep growing the cost
+    by the final ratio instead.
+    """
+    level = max(1, int(level))
+    top = len(LEVEL_TOTAL) - 1
+    if level <= top:
+        return LEVEL_TOTAL[level]
+    cost, total = LEVEL_COST[-1], LEVEL_TOTAL[-1]
+    ratio = LEVEL_COST[-1] / LEVEL_COST[-2]
+    for _ in range(level - top):
+        cost *= ratio
+        total += cost
+    return int(round(total))
+
+
+def active_hours_before(sessions, cut, now):
+    """Hours of recorded playtime that had elapsed by `cut`."""
+    total = 0.0
+    for row in sessions:
+        start = parse_iso(row["started_at"])
+        end = parse_iso(row["ended_at"]) if row["ended_at"] else now
+        end = min(end, cut)
+        if end > start:
+            total += (end - start).total_seconds()
+    return total / 3600.0
+
+
+def advancement(samples, sessions, now):
+    """EXP per active hour, inferred from level changes.
+
+    Levels per hour falls as the curve steepens, so it cannot compare a level-20
+    player with a level-60 one. EXP per hour does: the cost of a level grows
+    roughly geometrically while the EXP a player earns per hour does not, so
+    this number stays flat as they advance. ExpRate multiplies it, as it does
+    every other EXP figure in the game.
+
+    Only level-up observations are used, and only between the first and last of
+    them, because their timestamps are the moment the level changed; a sample
+    taken at session start sits an unknown distance into its level and would
+    bias the total by up to one level. Levels are reported only while a player
+    is online, so this needs `level_samples`; a level that drops is a recreated
+    character, so only the run after the last drop counts.
+    """
+    ordered = sorted(samples, key=lambda r: r["ts"])
+    run = []
+    for sample in ordered:
+        if run and int(sample["level"]) < int(run[-1]["level"]):
+            run = []
+        run.append(sample)
+
+    changes = [cur for prev, cur in zip(run, run[1:])
+               if int(cur["level"]) > int(prev["level"])]
+    if len(changes) < 2:
+        return None
+
+    first, last = changes[0], changes[-1]
+    hours = (active_hours_before(sessions, parse_iso(last["ts"]), now)
+             - active_hours_before(sessions, parse_iso(first["ts"]), now))
+    exp = level_exp(last["level"]) - level_exp(first["level"])
+    if hours <= 0 or exp <= 0:
+        return None
+    return {
+        "level": int(run[-1]["level"]),
+        "observed_since": first["ts"],
+        "samples": len(run),
+        "level_ups": len(changes),
+        "hours": round(hours, 1),
+        "exp": exp,
+        "exp_per_hour": round(exp / hours),
+    }
+
+
 def summary_payload(month=None):
     now = now_utc()
     with _world_lock:
@@ -1280,6 +1420,9 @@ def summary_payload(month=None):
         players = {r["player_id"]: dict(r) for r in conn.execute("SELECT * FROM players")}
         all_sessions = session_rows(conn)
         month_sessions = session_rows(conn, month_start, month_end)
+        level_history = conn.execute(
+            "SELECT player_id, ts, level FROM level_samples ORDER BY player_id, ts"
+        ).fetchall()
         open_by_player = {
             r["player_id"]: r
             for r in conn.execute("SELECT * FROM sessions WHERE ended_at IS NULL")
@@ -1301,6 +1444,13 @@ def summary_payload(month=None):
         agg["seconds"] += max(0.0, (end - start).total_seconds())
         agg["sessions"] += 1
 
+    sessions_by_player = {}
+    for row in all_sessions:
+        sessions_by_player.setdefault(row["player_id"], []).append(row)
+    levels_by_player = {}
+    for row in level_history:
+        levels_by_player.setdefault(row["player_id"], []).append(row)
+
     player_rows = []
     for pid, meta in players.items():
         agg = totals.get(pid, {"seconds": 0.0, "sessions": 0})
@@ -1309,6 +1459,8 @@ def summary_payload(month=None):
             "name": meta["name"] or pid,
             "platform": meta["platform"] or "unknown",
             "level": meta["level"],
+            "advancement": advancement(
+                levels_by_player.get(pid, []), sessions_by_player.get(pid, []), now),
             "last_seen": meta["last_seen"],
             "ip": meta["last_ip"],
             "account_name": meta["account_name"],

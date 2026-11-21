@@ -29,6 +29,27 @@ Storing a name→id map keyed by time would be a real improvement.
 unrecoverable. Ingestion is now streaming, so the window is small, but a recreate
 still drops lines the follower had not read.
 
+**Advancement history is sampled, not derived.** `players.level` is a single
+overwritten value, and the API reports it only while a player is online, so
+`level_samples` is append-on-change (plus one row per session). Do not "simplify"
+it into a row per poll — that is ~2,880 rows per player per day — and do not
+compute a rate from `players.level`, which holds no history.
+
+**The rate is EXP/hour, inferred from levels.** `LEVEL_COST` is the wiki's
+per-level EXP table (`palworld.wiki.gg/wiki/Level`); the API never reports EXP, so
+that table is the only way to turn a level change into an amount of progress.
+Levels per hour falls as the curve steepens and cannot compare a level-20 player
+with a level-60 one; EXP/hour stays roughly flat. Two rules keep it honest: use
+**active session hours**, not wall clock since first seen, or casual players are
+punished for the days they did not play; and use **only level-up observations**
+as endpoints, because a sample at login sits an unknown distance into its level
+and is worth up to a whole level of error. `ExpRate` multiplies the result as it
+multiplies every EXP gain, so do not "correct" for it silently. A level that
+drops means the character was recreated; `advancement()` restarts the run there.
+The table stops at the official cap of 80 and `level_exp()` extrapolates past it,
+because a modded server can raise the cap and clamping would report a stalled
+player.
+
 **The log stream can lag a few seconds.** The game flushes stdout on its own
 schedule; measured arrivals ranged from 18 ms to 4.1 s after the event. Do not
 promise sub-second presence in the UI copy.
@@ -110,6 +131,14 @@ blob/disk comparisons diverge.
 
 ## Known gaps
 
+- **Level history starts at the deploy that added it.** `level_samples` cannot be
+  backfilled from anything the game exposes, so `advancement` stays `null` for a
+  player until two level-ups have been observed. Do not paper over that with a
+  `levels / total_seconds` fallback: it is the number this metric exists to
+  replace.
+- **AFK time is invisible.** Session duration is the denominator, and the REST
+  API cannot tell a player standing still from one playing. Say so in the UI
+  rather than presenting the rate as effort.
 - **No pruning.** `metrics` grows ~2,880 rows/day; `sessions` and `events` grow
   slowly. Add a retention job before this matters at multi-year scale.
 - **No timezone in the DB.** Stored UTC, rendered in the browser's locale, so two

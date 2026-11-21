@@ -64,6 +64,16 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
       "account_name": "exampleplayer-account",   // platform account, not the character
       "platform": "ps5",         // parsed from userId prefix
       "level": null,             // only known while online
+      "advancement": {           // null until two level-ups have been observed
+        "level": 20,
+        "observed_since": "2026-10-02T18:00:00+00:00",
+        "samples": 6,            // level observations in the current run
+        "level_ups": 5,
+        "hours": 31.0,           // active playtime covered by the run
+        "levels_per_doubling": 2.0, // headline rate: levels per 2x playtime
+        "hours_per_level": 11.1, // cost of the next level at the current pace
+        "curve_growth": 1.41     // implied XP cost multiplier per level
+      },
       "last_seen": "2026-11-08T01:05:44+00:00",
       "ip": "203.0.113.42",
       "ping": 32.2,              // ms, last reported while online
@@ -99,6 +109,16 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
 the month, including empty ones, and `players[]` within a day is sorted by
 seconds descending. `x`/`y`/`ping` are the last values seen while the player was
 online, so only render them for `online: true`.
+
+`advancement` measures how fast a player is progressing, corrected for the fact
+that each level costs more than the last. It fits `level = a*ln(active hours +
+1) + b` over the level history, so `levels_per_doubling` (i.e. `a*ln 2`) is
+independent of where on the curve the player sits, and of `ExpRate`, which only
+rescales time. `hours_per_level` is the marginal pace — what the next level costs
+at their current stage — so it falls as they progress even when effort is
+constant; use `levels_per_doubling` to compare players. The value is `null` until
+two level-ups have been observed, and a level that decreases (a recreated
+character) starts a new run.
 
 ## GET /api/events
 

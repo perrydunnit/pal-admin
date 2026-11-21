@@ -109,9 +109,12 @@ container does not miss lines.
 
 **API reconciliation.** For each returned player, resolve the identity, upsert
 `players` (including `accountName`, `ping`, coordinates), and open a session if
-none is open (`source='poll'`). Then close any open session whose player was not
-returned — unless it started less than 90 s ago, which avoids closing a session
-that a concurrent join just created.
+none is open (`source='poll'`). The reported level is also appended to
+`level_samples` — but only when it changed, or when the current session has no
+observation yet, because `players.level` is overwritten every poll and would
+otherwise record no history at all. Then close any open session whose player was
+not returned — unless it started less than 90 s ago, which avoids closing a
+session that a concurrent join just created.
 
 Net effect: exact boundaries when the log has them, a correct live view when it
 does not, and both within about a second.
@@ -145,6 +148,10 @@ CREATE UNIQUE INDEX ux_open_session ON sessions(player_id) WHERE ended_at IS NUL
 
 players(player_id PK, name, platform, level, first_seen, last_seen, last_ip,
         account_name, ping, last_x, last_y, user_id)
+
+level_samples(player_id, ts, level, PRIMARY KEY (player_id, ts))
+                                                          -- on change only; feeds
+                                                          -- the advancement fit
 
 metrics(ts PK, playernum, fps, fps_avg, frametime, days, basecamps,
         maxplayernum, uptime)                             -- one row per poll

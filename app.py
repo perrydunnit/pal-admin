@@ -11,7 +11,6 @@ import calendar as calmod
 import datetime as dt
 import ipaddress
 import json
-import math
 import os
 import re
 import shutil
@@ -1305,6 +1304,45 @@ def split_by_day(row, lo, hi):
         cursor = chunk_end
 
 
+# Player EXP required to leave each level, 1 through 79, from
+# palworld.wiki.gg/wiki/Level (1.0, cap 80). The API never reports EXP, so this
+# table is how a level change turns into an amount of progress.
+LEVEL_COST = (
+    50, 150, 200, 340, 520, 700, 900, 1150, 1500, 1900,
+    2400, 3000, 3800, 4677, 5353, 5860, 6367, 8564, 9409, 11944,
+    12789, 15831, 17690, 21070, 22760, 26140, 27830, 29520, 31210, 34546,
+    38229, 42295, 46783, 51738, 57207, 63245, 69910, 77267, 85389, 94355,
+    104254, 115182, 127245, 140561, 155260, 171487, 189400, 209174, 230983, 255059,
+    281635, 310972, 343356, 378104, 417573, 460143, 506239, 556335, 610983, 670817,
+    736563, 809074, 889276, 977950, 1075818, 1187703, 1311213, 1447560, 1598080, 1764244,
+    1947679, 2150182, 2373734, 2620524, 2892960, 3193698, 3525662, 3892088, 4296550,
+)
+# LEVEL_TOTAL[L] is the lifetime EXP of a character that has just reached L.
+LEVEL_TOTAL = [0, 0]
+for _cost in LEVEL_COST:
+    LEVEL_TOTAL.append(LEVEL_TOTAL[-1] + _cost)
+del _cost
+
+
+def level_exp(level):
+    """Lifetime EXP at `level`. Past the table's cap, extrapolate its last step.
+
+    The wiki stops at the game's cap of 80. A modded server can raise it, and
+    clamping would silently report a stalled player, so keep growing the cost
+    by the final ratio instead.
+    """
+    level = max(1, int(level))
+    top = len(LEVEL_TOTAL) - 1
+    if level <= top:
+        return LEVEL_TOTAL[level]
+    cost, total = LEVEL_COST[-1], LEVEL_TOTAL[-1]
+    ratio = LEVEL_COST[-1] / LEVEL_COST[-2]
+    for _ in range(level - top):
+        cost *= ratio
+        total += cost
+    return int(round(total))
+
+
 def active_hours_before(sessions, cut, now):
     """Hours of recorded playtime that had elapsed by `cut`."""
     total = 0.0
@@ -1318,19 +1356,20 @@ def active_hours_before(sessions, cut, now):
 
 
 def advancement(samples, sessions, now):
-    """How fast a player is advancing, corrected for the XP curve.
+    """EXP per active hour, inferred from level changes.
 
-    Palworld's cost per level grows roughly geometrically, so at a steady
-    XP/hour a player's level is logarithmic in playtime. Fitting
-    `level = a*ln(hours + 1) + b` therefore gives a measure that is independent
-    of where on the curve the player sits; `a*ln(2)` is the headline "levels
-    per doubling of playtime" and `exp(1/a)` the implied difficulty multiplier
-    per level. The slope also survives an ExpRate change, which only rescales
-    time and so moves the intercept.
+    Levels per hour falls as the curve steepens, so it cannot compare a level-20
+    player with a level-60 one. EXP per hour does: the cost of a level grows
+    roughly geometrically while the EXP a player earns per hour does not, so
+    this number stays flat as they advance. ExpRate multiplies it, as it does
+    every other EXP figure in the game.
 
-    Levels are only observed while a player is online, so this needs the
-    history in `level_samples`, not the single value in `players`. A level that
-    drops is a recreated character, so only the run after the last drop counts.
+    Only level-up observations are used, and only between the first and last of
+    them, because their timestamps are the moment the level changed; a sample
+    taken at session start sits an unknown distance into its level and would
+    bias the total by up to one level. Levels are reported only while a player
+    is online, so this needs `level_samples`; a level that drops is a recreated
+    character, so only the run after the last drop counts.
     """
     ordered = sorted(samples, key=lambda r: r["ts"])
     run = []
@@ -1338,36 +1377,26 @@ def advancement(samples, sessions, now):
         if run and int(sample["level"]) < int(run[-1]["level"]):
             run = []
         run.append(sample)
-    if len(run) < 3:
+
+    changes = [cur for prev, cur in zip(run, run[1:])
+               if int(cur["level"]) > int(prev["level"])]
+    if len(changes) < 2:
         return None
 
-    points = [(math.log(active_hours_before(sessions, parse_iso(s["ts"]), now) + 1.0),
-               int(s["level"]))
-              for s in run]
-    level_ups = sum(1 for a, b in zip(run, run[1:]) if int(b["level"]) > int(a["level"]))
-    count = len(points)
-    mean_x = sum(x for x, _ in points) / count
-    mean_y = sum(y for _, y in points) / count
-    den = sum((x - mean_x) ** 2 for x, _ in points)
-    # Fewer than two level-ups, or no spread in playtime, cannot distinguish a
-    # rate from noise.
-    if level_ups < 2 or den <= 0:
+    first, last = changes[0], changes[-1]
+    hours = (active_hours_before(sessions, parse_iso(last["ts"]), now)
+             - active_hours_before(sessions, parse_iso(first["ts"]), now))
+    exp = level_exp(last["level"]) - level_exp(first["level"])
+    if hours <= 0 or exp <= 0:
         return None
-    slope = sum((x - mean_x) * (y - mean_y) for x, y in points) / den
-    if slope <= 0:
-        return None
-
-    total_hours = active_hours_before(sessions, now, now)
     return {
         "level": int(run[-1]["level"]),
-        "observed_since": run[0]["ts"],
-        "samples": count,
-        "level_ups": level_ups,
-        "hours": round(total_hours, 1),
-        "levels_per_doubling": round(slope * math.log(2), 2),
-        # Marginal pace: what the next level costs at the current stage.
-        "hours_per_level": round((total_hours + 1.0) / slope, 1),
-        "curve_growth": round(math.exp(1.0 / slope), 2),
+        "observed_since": first["ts"],
+        "samples": len(run),
+        "level_ups": len(changes),
+        "hours": round(hours, 1),
+        "exp": exp,
+        "exp_per_hour": round(exp / hours),
     }
 
 

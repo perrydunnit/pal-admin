@@ -33,14 +33,22 @@ still drops lines the follower had not read.
 overwritten value, and the API reports it only while a player is online, so
 `level_samples` is append-on-change (plus one row per session). Do not "simplify"
 it into a row per poll — that is ~2,880 rows per player per day — and do not
-compute the rate from `players.level`, which holds no history. A level that drops
-means the character was recreated; `advancement()` restarts the fit there instead
-of averaging across two characters. The fit uses **active session hours**, not
-wall clock since first seen, or casual players are punished for the days they did
-not play. Its slope is invariant to `ExpRate` (a multiplier only moves the
-intercept), so a settings change does not invalidate earlier history — but pausing
-to collect the curve by hand is unnecessary: `curve_growth` reports the effective
-multiplier the server is running.
+compute a rate from `players.level`, which holds no history.
+
+**The rate is EXP/hour, inferred from levels.** `LEVEL_COST` is the wiki's
+per-level EXP table (`palworld.wiki.gg/wiki/Level`); the API never reports EXP, so
+that table is the only way to turn a level change into an amount of progress.
+Levels per hour falls as the curve steepens and cannot compare a level-20 player
+with a level-60 one; EXP/hour stays roughly flat. Two rules keep it honest: use
+**active session hours**, not wall clock since first seen, or casual players are
+punished for the days they did not play; and use **only level-up observations**
+as endpoints, because a sample at login sits an unknown distance into its level
+and is worth up to a whole level of error. `ExpRate` multiplies the result as it
+multiplies every EXP gain, so do not "correct" for it silently. A level that
+drops means the character was recreated; `advancement()` restarts the run there.
+The table stops at the official cap of 80 and `level_exp()` extrapolates past it,
+because a modded server can raise the cap and clamping would report a stalled
+player.
 
 **The log stream can lag a few seconds.** The game flushes stdout on its own
 schedule; measured arrivals ranged from 18 ms to 4.1 s after the event. Do not

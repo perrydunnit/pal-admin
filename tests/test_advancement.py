@@ -1,9 +1,9 @@
-"""Tests for the advancement metric and the level history it needs.
+"""Tests for the EXP-per-hour metric and the level history it needs.
 
-The rate is a regression over sparse observations, so it can be wrong in ways
-that still produce a plausible-looking number. These pin the shape: a player on
-a clean logarithmic curve, a recreated character whose level drops, and the case
-where there is not enough history to say anything at all.
+EXP/hour is inferred from level changes against a fixed curve, so the two ways
+it can lie are a bad curve and a bad level of observation. These pin the curve
+against known totals, a constant rate coming back as a constant rate, and the
+cases where there is not enough history to say anything at all.
 """
 
 import datetime as dt
@@ -41,57 +41,92 @@ def open_session(start_hours):
 
 
 @needs_app
+class LevelTableTests(unittest.TestCase):
+    def test_cumulative_totals_match_the_wiki(self):
+        self.assertEqual(paladmin.level_exp(1), 0)
+        self.assertEqual(paladmin.level_exp(2), 50)
+        self.assertEqual(paladmin.level_exp(14), 16_610)
+        self.assertEqual(paladmin.level_exp(50), 2_378_134)
+        self.assertEqual(paladmin.level_exp(60), 6_498_533)
+        self.assertEqual(paladmin.level_exp(80), 45_859_908)
+
+    def test_every_level_costs_more_than_the_last(self):
+        for earlier, later in zip(paladmin.LEVEL_COST, paladmin.LEVEL_COST[1:]):
+            self.assertGreater(later, earlier)
+
+    def test_extrapolates_past_the_cap(self):
+        # A modded server can raise the cap; the number must keep growing.
+        self.assertGreater(paladmin.level_exp(90), paladmin.level_exp(80))
+        self.assertLess(paladmin.level_exp(90) - paladmin.level_exp(89),
+                        paladmin.level_exp(91) - paladmin.level_exp(90))
+
+
+def at_level(rate, start_level, level):
+    """Hours of play at `rate` EXP/hour to go from `start_level` to `level`."""
+    return (paladmin.level_exp(level) - paladmin.level_exp(start_level)) / rate
+
+
+@needs_app
 class AdvancementTests(unittest.TestCase):
-    def test_levels_per_doubling_matches_a_clean_log_curve(self):
-        # Level = 10 + 2*log2(hours + 1), sampled where each doubling lands.
-        levels = {0: 10, 1: 12, 3: 14, 7: 16, 15: 18, 31: 20}
-        samples = [sample(h, level) for h, level in levels.items()]
-        result = paladmin.advancement(samples, [open_session(0)], now=at(31))
+    RATE = 10_000
+    START = 30
+
+    def samples_for(self, levels):
+        return ([sample(0, self.START)]
+                + [sample(at_level(self.RATE, self.START, lvl), lvl) for lvl in levels])
+
+    def test_a_constant_rate_comes_back_constant_across_the_curve(self):
+        samples = self.samples_for([31, 32, 33, 34, 35, 36])
+        result = paladmin.advancement(samples, [open_session(0)], now=at(40))
 
         self.assertIsNotNone(result)
-        self.assertEqual(result["level"], 20)
-        self.assertEqual(result["level_ups"], 5)
-        self.assertAlmostEqual(result["levels_per_doubling"], 2.0, delta=0.02)
-        # A +2 levels per doubling curve is e^(ln2/2) = sqrt(2) per level.
-        self.assertAlmostEqual(result["curve_growth"], 2 ** 0.5, delta=0.02)
-        # At h=31 the next level costs about 32/slope hours.
-        self.assertAlmostEqual(result["hours_per_level"], 11.1, delta=0.2)
+        self.assertEqual(result["level"], 36)
+        self.assertEqual(result["level_ups"], 6)
+        # The last levels cost 5-10x the first ones, and the rate must not move.
+        self.assertAlmostEqual(result["exp_per_hour"], self.RATE, delta=self.RATE * 0.01)
+
+    def test_the_run_starts_at_the_first_level_up_not_at_login(self):
+        samples = self.samples_for([31, 32, 33])
+        result = paladmin.advancement(samples, [open_session(0)], now=at(40))
+
+        self.assertEqual(result["observed_since"], samples[1]["ts"])
+        self.assertEqual(result["samples"], 4)
 
     def test_playtime_uses_sessions_not_wall_clock(self):
-        # The same six samples, but only 8 of the 31 wall-clock hours were played.
+        # Level 31 lands in the first session, level 32 in the second. The 2 h
+        # gap between them must not be charged as playtime.
         sessions = [
-            {"started_at": iso(0), "ended_at": iso(4)},
-            {"started_at": iso(20), "ended_at": iso(24)},
-            {"started_at": iso(27), "ended_at": iso(31)},
+            {"started_at": iso(0), "ended_at": iso(5)},
+            {"started_at": iso(7), "ended_at": iso(13)},
         ]
-        samples = [sample(h, lvl) for h, lvl in
-                   {0: 10, 1: 12, 3: 14, 7: 16, 15: 18, 31: 20}.items()]
-        idle = paladmin.advancement(samples, [open_session(0)], now=at(31))
-        played = paladmin.advancement(samples, sessions, now=at(31))
+        samples = [
+            sample(0, self.START),
+            sample(3.4546, 31),
+            sample(9.2775, 32),
+        ]
+        result = paladmin.advancement(samples, sessions, now=at(13))
 
-        self.assertAlmostEqual(played["hours"], 12.0, delta=0.01)
-        self.assertLess(played["hours"], idle["hours"])
-        self.assertLess(played["hours_per_level"], idle["hours_per_level"])
+        self.assertAlmostEqual(result["hours"], 3.8, delta=0.05)
+        self.assertAlmostEqual(result["exp_per_hour"], self.RATE, delta=self.RATE * 0.01)
 
     def test_a_dropped_level_starts_a_new_run(self):
         samples = [
-            sample(0, 30), sample(1, 31), sample(3, 32), sample(5, 33),
-            sample(40, 1), sample(41, 2), sample(43, 3), sample(47, 4),
+            sample(0, 40), sample(1, 41), sample(2, 42),
+            sample(10, 1), sample(10.1, 2), sample(10.2, 3),
         ]
-        result = paladmin.advancement(samples, [open_session(0)], now=at(47))
+        result = paladmin.advancement(samples, [open_session(0)], now=at(12))
 
         self.assertIsNotNone(result)
-        self.assertEqual(result["level"], 4)
-        self.assertEqual(result["observed_since"], iso(40))
-        self.assertEqual(result["level_ups"], 3)
+        self.assertEqual(result["level"], 3)
+        self.assertEqual(result["observed_since"], iso(10.1))
 
     def test_insufficient_history_returns_none(self):
         session = [open_session(0)]
         self.assertIsNone(paladmin.advancement([sample(0, 10)], session, at(1)))
-        # No level-ups: a flat line is not a rate.
+        # No level-ups: there is no rate to measure.
         self.assertIsNone(paladmin.advancement(
             [sample(0, 10), sample(1, 10), sample(2, 10)], session, at(2)))
-        # One level-up is not enough to fit a curve.
+        # One level-up only brackets that level; it cannot give a rate.
         self.assertIsNone(paladmin.advancement(
             [sample(0, 10), sample(1, 11)], session, at(1)))
 

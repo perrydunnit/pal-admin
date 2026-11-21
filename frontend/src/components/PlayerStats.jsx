@@ -14,7 +14,7 @@ export default function PlayerStats({ summary }) {
             <th>Player</th>
             <th>Platform</th>
             <th className="num">Level</th>
-            <th className="num" title="Levels gained per doubling of active playtime; corrected for the XP curve">Advancement</th>
+            <th className="num" title="EXP earned per hour of play; unlike levels per hour it stays comparable as each level costs more">Advancement</th>
             <th className="num">Playtime</th>
             <th>Sessions</th>
             <th className="num">Avg session</th>
@@ -31,9 +31,9 @@ export default function PlayerStats({ summary }) {
               <td className="num">{p.level ?? '—'}</td>
               <td className="num">
                 {p.advancement ? (
-                  <span title={`${p.advancement.level_ups} level-ups over ${p.advancement.hours} h played; each level costs about ×${p.advancement.curve_growth} more than the last`}>
-                    {p.advancement.levels_per_doubling.toFixed(1)}
-                    <div className="sub">lvl per 2× playtime</div>
+                  <span title={`${p.advancement.level_ups} level-ups over ${p.advancement.hours} h played; ${p.advancement.exp.toLocaleString()} EXP in that span`}>
+                    {p.advancement.exp_per_hour.toLocaleString()}
+                    <div className="sub">exp / hour</div>
                   </span>
                 ) : '—'}
               </td>

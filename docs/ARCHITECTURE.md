@@ -151,7 +151,7 @@ players(player_id PK, name, platform, level, first_seen, last_seen, last_ip,
 
 level_samples(player_id, ts, level, PRIMARY KEY (player_id, ts))
                                                           -- on change only; feeds
-                                                          -- the advancement fit
+                                                          -- the EXP/hour estimate
 
 metrics(ts PK, playernum, fps, fps_avg, frametime, days, basecamps,
         maxplayernum, uptime)                             -- one row per poll

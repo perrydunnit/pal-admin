@@ -65,14 +65,13 @@ Responses are JSON with ISO-8601 UTC timestamps at second precision.
       "platform": "ps5",         // parsed from userId prefix
       "level": null,             // only known while online
       "advancement": {           // null until two level-ups have been observed
-        "level": 20,
-        "observed_since": "2026-10-02T18:00:00+00:00",
-        "samples": 6,            // level observations in the current run
-        "level_ups": 5,
-        "hours": 31.0,           // active playtime covered by the run
-        "levels_per_doubling": 2.0, // headline rate: levels per 2x playtime
-        "hours_per_level": 11.1, // cost of the next level at the current pace
-        "curve_growth": 1.41     // implied XP cost multiplier per level
+        "level": 47,             // current level
+        "observed_since": "2026-10-02T18:00:00+00:00", // first level-up in the run
+        "samples": 9,            // level observations in the current run
+        "level_ups": 6,          // level-ups between those observations
+        "hours": 41.2,           // active playtime between those level-ups
+        "exp": 424734,           // EXP implied by those level-ups
+        "exp_per_hour": 10309    // headline rate; ExpRate scales it
       },
       "last_seen": "2026-11-08T01:05:44+00:00",
       "ip": "203.0.113.42",
@@ -110,15 +109,18 @@ the month, including empty ones, and `players[]` within a day is sorted by
 seconds descending. `x`/`y`/`ping` are the last values seen while the player was
 online, so only render them for `online: true`.
 
-`advancement` measures how fast a player is progressing, corrected for the fact
-that each level costs more than the last. It fits `level = a*ln(active hours +
-1) + b` over the level history, so `levels_per_doubling` (i.e. `a*ln 2`) is
-independent of where on the curve the player sits, and of `ExpRate`, which only
-rescales time. `hours_per_level` is the marginal pace — what the next level costs
-at their current stage — so it falls as they progress even when effort is
-constant; use `levels_per_doubling` to compare players. The value is `null` until
-two level-ups have been observed, and a level that decreases (a recreated
-character) starts a new run.
+`advancement` measures how fast a player is progressing, in **EXP per active
+hour**. The API never reports EXP, so it is inferred from level changes using the
+game's curve ([palworld.wiki.gg/wiki/Level](https://palworld.wiki.gg/wiki/Level)):
+a level change is worth the difference between the cumulative EXP of the two
+levels. Because each level costs more than the last, but a player's EXP gain per
+hour does not, EXP/hour stays roughly flat as they advance — so it compares
+players at different stages, which levels per hour cannot. Only level-up
+observations are used, and only between the first and last of them: a sample
+taken at login sits an unknown distance into its level and would bias the total
+by up to a whole level. `ExpRate` multiplies the result, as it does every EXP
+gain. The value is `null` until two level-ups have been observed, and a level
+that decreases (a recreated character) starts a new run.
 
 ## GET /api/events
 

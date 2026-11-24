@@ -112,7 +112,10 @@ container does not miss lines.
 none is open (`source='poll'`). The reported level is also appended to
 `level_samples` — but only when it changed, or when the current session has no
 observation yet, because `players.level` is overwritten every poll and would
-otherwise record no history at all. Then close any open session whose player was
+otherwise record no history at all. A *decrease* inside one session is dropped:
+the API answers with level 1 while a character is still loading, and recording
+that would restart the player's history. Only a new session can begin a lower
+level, which is a recreated character. Then close any open session whose player was
 not returned — unless it started less than 90 s ago, which avoids closing a
 session that a concurrent join just created.
 
@@ -150,8 +153,8 @@ players(player_id PK, name, platform, level, first_seen, last_seen, last_ip,
         account_name, ping, last_x, last_y, user_id)
 
 level_samples(player_id, ts, level, PRIMARY KEY (player_id, ts))
-                                                          -- on change only; feeds
-                                                          -- the EXP/hour estimate
+                                                          -- on change only; the
+                                                          -- durable level record
 
 metrics(ts PK, playernum, fps, fps_avg, frametime, days, basecamps,
         maxplayernum, uptime)                             -- one row per poll

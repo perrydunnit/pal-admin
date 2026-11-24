@@ -1,12 +1,14 @@
-"""Tests for the EXP-per-hour metric and the level history it needs.
+"""Tests for the advancement metric and the level history behind it.
 
-EXP/hour is inferred from level changes against a fixed curve, so the two ways
-it can lie are a bad curve and a bad level of observation. These pin the curve
-against known totals, a constant rate coming back as a constant rate, and the
-cases where there is not enough history to say anything at all.
+The metric has one claim to defend: it must describe the player, not their
+position on the curve. A level-40 and a level-70 player who advance at the same
+relative pace have to come out with the same number, or the column just repeats
+the level. These pin that, plus the ingestion guard that keeps transient API
+reports out of `level_samples`.
 """
 
 import datetime as dt
+import math
 import os
 import sqlite3
 import sys
@@ -24,118 +26,55 @@ needs_app = unittest.skipUnless(
 START = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
 
 
-def at(hours):
-    return START + dt.timedelta(hours=hours)
-
-
-def iso(hours):
-    return at(hours).isoformat()
-
-
-def sample(hours, level):
-    return {"ts": iso(hours), "level": level}
-
-
-def open_session(start_hours):
-    return {"started_at": iso(start_hours), "ended_at": None}
-
-
-@needs_app
-class LevelTableTests(unittest.TestCase):
-    def test_cumulative_totals_match_the_wiki(self):
-        self.assertEqual(paladmin.level_exp(1), 0)
-        self.assertEqual(paladmin.level_exp(2), 50)
-        self.assertEqual(paladmin.level_exp(14), 16_610)
-        self.assertEqual(paladmin.level_exp(50), 2_378_134)
-        self.assertEqual(paladmin.level_exp(60), 6_498_533)
-        self.assertEqual(paladmin.level_exp(80), 45_859_908)
-
-    def test_every_level_costs_more_than_the_last(self):
-        for earlier, later in zip(paladmin.LEVEL_COST, paladmin.LEVEL_COST[1:]):
-            self.assertGreater(later, earlier)
-
-    def test_extrapolates_past_the_cap(self):
-        # A modded server can raise the cap; the number must keep growing.
-        self.assertGreater(paladmin.level_exp(90), paladmin.level_exp(80))
-        self.assertLess(paladmin.level_exp(90) - paladmin.level_exp(89),
-                        paladmin.level_exp(91) - paladmin.level_exp(90))
-
-
-def at_level(rate, start_level, level):
-    """Hours of play at `rate` EXP/hour to go from `start_level` to `level`."""
-    return (paladmin.level_exp(level) - paladmin.level_exp(start_level)) / rate
+def hours_for(level, per_efold=12.0):
+    """Playtime a character starting at level 1 needs to reach `level`."""
+    return math.exp((level - 1) / per_efold) - 1.0
 
 
 @needs_app
 class AdvancementTests(unittest.TestCase):
-    RATE = 10_000
-    START = 30
+    def test_recovers_the_slope_it_was_built_from(self):
+        result = paladmin.advancement(40, hours_for(40, per_efold=12.0))
 
-    def samples_for(self, levels):
-        return ([sample(0, self.START)]
-                + [sample(at_level(self.RATE, self.START, lvl), lvl) for lvl in levels])
-
-    def test_a_constant_rate_comes_back_constant_across_the_curve(self):
-        samples = self.samples_for([31, 32, 33, 34, 35, 36])
-        result = paladmin.advancement(samples, [open_session(0)], now=at(40))
-
-        self.assertIsNotNone(result)
-        self.assertEqual(result["level"], 36)
-        self.assertEqual(result["level_ups"], 6)
-        # The last levels cost 5-10x the first ones, and the rate must not move.
-        self.assertAlmostEqual(result["exp_per_hour"], self.RATE, delta=self.RATE * 0.01)
-
-    def test_the_run_starts_at_the_first_level_up_not_at_login(self):
-        samples = self.samples_for([31, 32, 33])
-        result = paladmin.advancement(samples, [open_session(0)], now=at(40))
-
-        self.assertEqual(result["observed_since"], samples[1]["ts"])
-        self.assertEqual(result["samples"], 4)
-
-    def test_playtime_uses_sessions_not_wall_clock(self):
-        # Level 31 lands in the first session, level 32 in the second. The 2 h
-        # gap between them must not be charged as playtime.
-        sessions = [
-            {"started_at": iso(0), "ended_at": iso(5)},
-            {"started_at": iso(7), "ended_at": iso(13)},
-        ]
-        samples = [
-            sample(0, self.START),
-            sample(3.4546, 31),
-            sample(9.2775, 32),
-        ]
-        result = paladmin.advancement(samples, sessions, now=at(13))
-
-        self.assertAlmostEqual(result["hours"], 3.8, delta=0.05)
-        self.assertAlmostEqual(result["exp_per_hour"], self.RATE, delta=self.RATE * 0.01)
-
-    def test_a_dropped_level_starts_a_new_run(self):
-        samples = [
-            sample(0, 40), sample(1, 41), sample(2, 42),
-            sample(10, 1), sample(10.1, 2), sample(10.2, 3),
-        ]
-        result = paladmin.advancement(samples, [open_session(0)], now=at(12))
-
-        self.assertIsNotNone(result)
-        self.assertEqual(result["level"], 3)
-        self.assertEqual(result["observed_since"], iso(10.1))
-
-    def test_insufficient_history_returns_none(self):
-        session = [open_session(0)]
-        self.assertIsNone(paladmin.advancement([sample(0, 10)], session, at(1)))
-        # No level-ups: there is no rate to measure.
-        self.assertIsNone(paladmin.advancement(
-            [sample(0, 10), sample(1, 10), sample(2, 10)], session, at(2)))
-        # One level-up only brackets that level; it cannot give a rate.
-        self.assertIsNone(paladmin.advancement(
-            [sample(0, 10), sample(1, 11)], session, at(1)))
-
-    def test_offline_gaps_do_not_count_as_playtime(self):
-        session = [open_session(0)]
         self.assertAlmostEqual(
-            paladmin.active_hours_before(session, at(5), at(9)), 5.0, delta=0.01)
-        self.assertAlmostEqual(
-            paladmin.active_hours_before(session, at(20), at(9)), 9.0, delta=0.01)
+            result["levels_per_doubling"], 12.0 * math.log(2), delta=0.05)
+
+    def test_the_number_does_not_move_with_level(self):
+        # Same per-e-fold pace at four very different levels: one number.
+        values = [paladmin.advancement(level, hours_for(level))["levels_per_doubling"]
+                  for level in (10, 30, 55, 79)]
+
+        for value in values:
+            self.assertAlmostEqual(value, values[0], delta=0.01)
+
+    def test_a_fast_player_outranks_a_slow_one_at_the_same_level(self):
+        fast = paladmin.advancement(60, hours_for(60, per_efold=18.0))
+        slow = paladmin.advancement(60, hours_for(60, per_efold=10.0))
+
+        self.assertGreater(fast["levels_per_doubling"], slow["levels_per_doubling"])
+        # Level 60 in less time must not be penalised for being level 60.
+        self.assertEqual(fast["level"], slow["level"])
+
+    def test_insufficient_data_returns_none(self):
+        self.assertIsNone(paladmin.advancement(None, 10))
+        self.assertIsNone(paladmin.advancement(1, 10))
+        # Under an hour is still the opening rush, where levels are minutes
+        # apart and the fit says nothing about the player.
+        self.assertIsNone(paladmin.advancement(12, 0.5))
+        self.assertIsNone(paladmin.advancement(12, 0))
+
+
+@needs_app
+class ObservedLevelTests(unittest.TestCase):
+    def test_a_transient_level_1_does_not_lower_the_reported_level(self):
+        # The live site recorded 76 -> 1 -> 76 inside one minute; that row is noise.
+        samples = [{"level": 76}, {"level": 1}, {"level": 76}]
+
+        self.assertEqual(paladmin.observed_level({"level": 1}, samples), 76)
+
+    def test_falls_back_to_the_stored_level(self):
+        self.assertEqual(paladmin.observed_level({"level": 42}, []), 42)
+        self.assertIsNone(paladmin.observed_level({"level": None}, []))
 
 
 @needs_app
@@ -157,30 +96,43 @@ class RecordLevelTests(unittest.TestCase):
             "SELECT player_id, level FROM level_samples ORDER BY ts")]
 
     def test_repeats_inside_one_session_are_dropped(self):
-        started = at(0)
-        self.assertTrue(paladmin.record_level(
-            self.conn, "p", 12, at(0.01), started))
-        for minutes in (1, 2, 10):
-            self.assertFalse(paladmin.record_level(
-                self.conn, "p", 12, at(minutes / 60), started))
+        self.assertTrue(paladmin.record_level(self.conn, "p", 12, START, START))
+        self.assertFalse(paladmin.record_level(
+            self.conn, "p", 12, START + dt.timedelta(minutes=10), START))
         self.assertEqual(self.rows(), [("p", 12)])
 
     def test_a_change_is_recorded(self):
-        started = at(0)
-        paladmin.record_level(self.conn, "p", 12, at(0.01), started)
-        self.assertTrue(paladmin.record_level(self.conn, "p", 13, at(2), started))
+        paladmin.record_level(self.conn, "p", 12, START, START)
+        self.assertTrue(paladmin.record_level(
+            self.conn, "p", 13, START + dt.timedelta(hours=2), START))
         self.assertEqual(self.rows(), [("p", 12), ("p", 13)])
 
+    def test_a_drop_inside_a_session_is_noise(self):
+        # The 76 -> 1 -> 76 sequence the API produces while a character loads.
+        # Recording it would restart the player's history.
+        paladmin.record_level(self.conn, "p", 76, START, START)
+        self.assertFalse(paladmin.record_level(
+            self.conn, "p", 1, START + dt.timedelta(seconds=10), START))
+        self.assertEqual(self.rows(), [("p", 76)])
+
+    def test_a_drop_between_sessions_is_a_new_character(self):
+        paladmin.record_level(self.conn, "p", 76, START, START)
+        second = START + dt.timedelta(hours=5)
+        self.assertTrue(paladmin.record_level(self.conn, "p", 1, second, second))
+        self.assertEqual(self.rows(), [("p", 76), ("p", 1)])
+
     def test_a_new_session_records_the_current_level(self):
-        paladmin.record_level(self.conn, "p", 13, at(0.01), at(0))
-        self.assertFalse(paladmin.record_level(self.conn, "p", 13, at(1), at(0)))
-        self.assertTrue(paladmin.record_level(self.conn, "p", 13, at(4), at(4)))
+        paladmin.record_level(self.conn, "p", 13, START, START)
+        self.assertFalse(paladmin.record_level(
+            self.conn, "p", 13, START + dt.timedelta(minutes=5), START))
+        third = START + dt.timedelta(hours=4)
+        self.assertTrue(paladmin.record_level(self.conn, "p", 13, third, third))
         self.assertEqual(self.rows(), [("p", 13), ("p", 13)])
 
     def test_null_levels_are_ignored(self):
         # The API reports no level while a character is still loading.
-        self.assertFalse(paladmin.record_level(self.conn, "p", None, at(0.01), at(0)))
-        self.assertFalse(paladmin.record_level(self.conn, "p", "", at(0.02), at(0)))
+        self.assertFalse(paladmin.record_level(self.conn, "p", None, START, START))
+        self.assertFalse(paladmin.record_level(self.conn, "p", "", START, START))
         self.assertEqual(self.rows(), [])
 
 

@@ -11,6 +11,7 @@ import calendar as calmod
 import datetime as dt
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -373,8 +374,16 @@ def record_level(conn, player_id, level, now, session_start=None):
         "SELECT ts, level FROM level_samples WHERE player_id=? ORDER BY ts DESC LIMIT 1",
         (player_id,),
     ).fetchone()
-    if last is not None and int(last["level"]) == level:
-        if session_start is None or parse_iso(last["ts"]) >= session_start:
+    if last is not None:
+        seen_at = parse_iso(last["ts"])
+        if int(last["level"]) == level:
+            if session_start is None or seen_at >= session_start:
+                return False
+        elif level < int(last["level"]) and session_start is not None \
+                and seen_at >= session_start:
+            # A drop inside one session is the API misreporting — it answers
+            # with level 1 while a character is still loading — not a real
+            # regression. Only a new session can start a recreated character.
             return False
     cur = conn.execute(
         "INSERT OR IGNORE INTO level_samples(player_id, ts, level) VALUES(?,?,?)",
@@ -1304,99 +1313,41 @@ def split_by_day(row, lo, hi):
         cursor = chunk_end
 
 
-# Player EXP required to leave each level, 1 through 79, from
-# palworld.wiki.gg/wiki/Level (1.0, cap 80). The API never reports EXP, so this
-# table is how a level change turns into an amount of progress.
-LEVEL_COST = (
-    50, 150, 200, 340, 520, 700, 900, 1150, 1500, 1900,
-    2400, 3000, 3800, 4677, 5353, 5860, 6367, 8564, 9409, 11944,
-    12789, 15831, 17690, 21070, 22760, 26140, 27830, 29520, 31210, 34546,
-    38229, 42295, 46783, 51738, 57207, 63245, 69910, 77267, 85389, 94355,
-    104254, 115182, 127245, 140561, 155260, 171487, 189400, 209174, 230983, 255059,
-    281635, 310972, 343356, 378104, 417573, 460143, 506239, 556335, 610983, 670817,
-    736563, 809074, 889276, 977950, 1075818, 1187703, 1311213, 1447560, 1598080, 1764244,
-    1947679, 2150182, 2373734, 2620524, 2892960, 3193698, 3525662, 3892088, 4296550,
-)
-# LEVEL_TOTAL[L] is the lifetime EXP of a character that has just reached L.
-LEVEL_TOTAL = [0, 0]
-for _cost in LEVEL_COST:
-    LEVEL_TOTAL.append(LEVEL_TOTAL[-1] + _cost)
-del _cost
+# Below this the log fit is dominated by the first hour of play, where levels
+# still come every few minutes.
+MIN_ADVANCEMENT_HOURS = 1.0
 
 
-def level_exp(level):
-    """Lifetime EXP at `level`. Past the table's cap, extrapolate its last step.
+def observed_level(meta, samples):
+    """The highest level this player has ever been seen at.
 
-    The wiki stops at the game's cap of 80. A modded server can raise it, and
-    clamping would silently report a stalled player, so keep growing the cost
-    by the final ratio instead.
+    `players.level` is overwritten on every poll, so the API reporting level 1
+    while a character loads sticks until the next poll. The samples are the
+    durable record; take the best of both.
     """
-    level = max(1, int(level))
-    top = len(LEVEL_TOTAL) - 1
-    if level <= top:
-        return LEVEL_TOTAL[level]
-    cost, total = LEVEL_COST[-1], LEVEL_TOTAL[-1]
-    ratio = LEVEL_COST[-1] / LEVEL_COST[-2]
-    for _ in range(level - top):
-        cost *= ratio
-        total += cost
-    return int(round(total))
+    return max([meta["level"] or 0] + [int(r["level"]) for r in samples]) or None
 
 
-def active_hours_before(sessions, cut, now):
-    """Hours of recorded playtime that had elapsed by `cut`."""
-    total = 0.0
-    for row in sessions:
-        start = parse_iso(row["started_at"])
-        end = parse_iso(row["ended_at"]) if row["ended_at"] else now
-        end = min(end, cut)
-        if end > start:
-            total += (end - start).total_seconds()
-    return total / 3600.0
+def advancement(level, hours):
+    """Levels gained per doubling of playtime.
 
+    Palworld charges progressively more EXP per level, so at a steady pace of
+    play a character's level is logarithmic in the time spent: `level ~ k*ln(h)`.
+    The coefficient is the part that describes the player rather than the curve,
+    so it lines up players at different levels where levels/hour and EXP/hour do
+    not — the first falls as the curve steepens, the second rises because
+    higher-level content pays far more than the curve charges.
 
-def advancement(samples, sessions, now):
-    """EXP per active hour, inferred from level changes.
-
-    Levels per hour falls as the curve steepens, so it cannot compare a level-20
-    player with a level-60 one. EXP per hour does: the cost of a level grows
-    roughly geometrically while the EXP a player earns per hour does not, so
-    this number stays flat as they advance. ExpRate multiplies it, as it does
-    every other EXP figure in the game.
-
-    Only level-up observations are used, and only between the first and last of
-    them, because their timestamps are the moment the level changed; a sample
-    taken at session start sits an unknown distance into its level and would
-    bias the total by up to one level. Levels are reported only while a player
-    is online, so this needs `level_samples`; a level that drops is a recreated
-    character, so only the run after the last drop counts.
+    Reported as levels per doubling of playtime, i.e. `k*ln(2)`, which says how
+    much further a player gets for twice the hours.
     """
-    ordered = sorted(samples, key=lambda r: r["ts"])
-    run = []
-    for sample in ordered:
-        if run and int(sample["level"]) < int(run[-1]["level"]):
-            run = []
-        run.append(sample)
-
-    changes = [cur for prev, cur in zip(run, run[1:])
-               if int(cur["level"]) > int(prev["level"])]
-    if len(changes) < 2:
+    if not level or not hours or level < 2 or hours < MIN_ADVANCEMENT_HOURS:
         return None
-
-    first, last = changes[0], changes[-1]
-    hours = (active_hours_before(sessions, parse_iso(last["ts"]), now)
-             - active_hours_before(sessions, parse_iso(first["ts"]), now))
-    exp = level_exp(last["level"]) - level_exp(first["level"])
-    if hours <= 0 or exp <= 0:
-        return None
+    per_efold = (level - 1) / math.log(hours + 1.0)
     return {
-        "level": int(run[-1]["level"]),
-        "observed_since": first["ts"],
-        "samples": len(run),
-        "level_ups": len(changes),
+        "level": int(level),
         "hours": round(hours, 1),
-        "exp": exp,
-        "exp_per_hour": round(exp / hours),
+        "levels_per_doubling": round(per_efold * math.log(2), 1),
     }
 
 
@@ -1444,9 +1395,6 @@ def summary_payload(month=None):
         agg["seconds"] += max(0.0, (end - start).total_seconds())
         agg["sessions"] += 1
 
-    sessions_by_player = {}
-    for row in all_sessions:
-        sessions_by_player.setdefault(row["player_id"], []).append(row)
     levels_by_player = {}
     for row in level_history:
         levels_by_player.setdefault(row["player_id"], []).append(row)
@@ -1460,7 +1408,8 @@ def summary_payload(month=None):
             "platform": meta["platform"] or "unknown",
             "level": meta["level"],
             "advancement": advancement(
-                levels_by_player.get(pid, []), sessions_by_player.get(pid, []), now),
+                observed_level(meta, levels_by_player.get(pid, [])),
+                agg["seconds"] / 3600.0),
             "last_seen": meta["last_seen"],
             "ip": meta["last_ip"],
             "account_name": meta["account_name"],
